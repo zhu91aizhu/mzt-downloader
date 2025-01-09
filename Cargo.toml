@@ -1,0 +1,10 @@
+[package]
+name = "gqwht-download"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.95"
+reqwest = "0.12.12"
+scraper = "0.22.0"
+tokio = { version = "1.42.0", features = ["fs", "test-util", "rt-multi-thread"] }
