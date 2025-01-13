@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
-async fn get_url_content(client: Arc<Client>, url: &str) -> Result<String> {
-    let client = client.clone();
+async fn get_url_content(client: Client, url: &str) -> Result<String> {
     let response = client.get(url).send().await?;
     let response = response.error_for_status()?;
     let content = response.text().await?;
@@ -17,7 +15,7 @@ async fn get_url_content(client: Arc<Client>, url: &str) -> Result<String> {
 
 #[derive(Clone)]
 pub struct Album {
-    client: Arc<Client>,
+    client: Client,
     pub name: String,
     url: String
 }
@@ -62,7 +60,7 @@ impl Album {
         Ok(all_pictures)
     }
 
-    async fn download_picture(client: Arc<Client>, url: &str, save_to_path: PathBuf) -> Result<()> {
+    async fn download_picture(client: Client, url: &str, save_to_path: PathBuf) -> Result<()> {
         let response = client.get(url).send().await?;
         if !response.status().is_success() {
             return Err(anyhow!("send get picture request error: {}", response.status()))
@@ -86,7 +84,7 @@ impl Album {
         let mut tasks = vec![];
         for url in pictures {
             let base_path = path.clone();
-            let client = Arc::clone(&self.client);
+            let client = self.client.clone();
             let task = tokio::spawn(async move {
                 match Self::download_picture(client, &url, base_path).await {
                     Ok(_) => {
@@ -112,7 +110,7 @@ impl Album {
 }
 
 pub struct AlbumSearcher {
-    client: Arc<Client>,
+    client: Client,
     page: u32,
     page_count: u32,
     size: u32,
@@ -130,7 +128,7 @@ impl AlbumSearcher {
         }
 
         Self {
-            client: Arc::new(Client::new()),
+            client: Client::new(),
             page: 0,
             page_count: 0,
             size,
@@ -145,9 +143,7 @@ impl AlbumSearcher {
 
     async fn parse_albums(&self) -> Result<(Vec<Album>, u32)> {
         let url = "";
-
-        let client: Arc<Client> = Arc::clone(&self.client);
-        let html = get_url_content(client, url).await?;
+        let html = get_url_content(self.client.clone(), url).await?;
 
         let page_count = if self.page_count == 0 {
             self.parse_page_count(&html)?
@@ -246,6 +242,7 @@ impl AlbumSearcher {
 #[cfg(test)]
 mod tests {
     use tokio;
+
     use super::*;
 
     #[test]
@@ -259,7 +256,7 @@ mod tests {
     #[test]
     fn test_download_album() {
         let album = Album {
-            client: Arc::new(Client::new()),
+            client: Client::new(),
             name: "壁纸".to_string(),
             url: "none".to_string()
         };
