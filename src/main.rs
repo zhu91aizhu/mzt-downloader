@@ -35,7 +35,7 @@ impl FromStr for Command {
                 Self::QUIT
             }
             other => {
-                if other.starts_with("DOWNLOAD ") || other.starts_with("D ") {
+                if other.starts_with("DOWNLOAD") || other.starts_with("D") {
                     let parts = other.split_whitespace();
                     match parts.skip(1).next() {
                         Some(idx) => {
@@ -52,7 +52,7 @@ impl FromStr for Command {
                             Self::ArgumentErr("缺少专辑索引参数".to_string())
                         }
                     }
-                } else if other.starts_with("SEARCH ") || other.starts_with("S ") {
+                } else if other.starts_with("SEARCH") || other.starts_with("S") {
                     let parts = other.split_whitespace();
                     match parts.skip(1).next() {
                         Some(keyword) => {
