@@ -242,16 +242,7 @@ impl AlbumSearcher {
 #[cfg(test)]
 mod tests {
     use tokio;
-
     use super::*;
-
-    #[test]
-    fn test_get_picture_name() {
-        let url = "http://www.baidu.com/s/test.png";
-
-        let path = Path::new(url);
-        println!("file name: {:?}", path.file_name().unwrap());
-    }
 
     #[test]
     fn test_download_album() {

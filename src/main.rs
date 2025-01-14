@@ -7,37 +7,39 @@ use gqwht_download::{Album, AlbumSearcher};
 
 #[derive(Debug)]
 enum Command {
-    HELP, SEARCH(String), FIRST, LAST, NEXT, PREV, DOWNLOAD(usize), QUIT, UNKNOWN, ArgumentErr(String)
+    HELP, FIRST, LAST, NEXT, PREV, QUIT, UNKNOWN, NONE,
+    SEARCH(String), DOWNLOAD(usize), ArgumentErr(String)
 }
 
 impl FromStr for Command {
     type Err = anyhow::Error;
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let input = s.trim().to_uppercase();
-        let cmd = match input.as_str() {
-            "HELP" | "H" => {
-                Self::HELP
-            }
-            "FIRST" | "F" => {
-                Self::FIRST
-            }
-            "LAST" | "L" => {
-                Self::LAST
-            }
-            "NEXT" | "N" => {
-                Self::NEXT
-            }
-            "PREV" | "P" => {
-                Self::PREV
-            }
-            "QUIT" | "Q" => {
-                Self::QUIT
-            }
-            other => {
-                if other.starts_with("DOWNLOAD") || other.starts_with("D") {
-                    let parts = other.split_whitespace();
-                    match parts.skip(1).next() {
+        let mut cmd_line = input.split_whitespace();
+        let cmd_name = cmd_line.next();
+        Ok(cmd_name.map_or(Self::NONE, |name| {
+            match name {
+                "HELP" | "H" => {
+                    Self::HELP
+                }
+                "FIRST" | "F" => {
+                    Self::FIRST
+                }
+                "LAST" | "L" => {
+                    Self::LAST
+                }
+                "NEXT" | "N" => {
+                    Self::NEXT
+                }
+                "PREV" | "P" => {
+                    Self::PREV
+                }
+                "QUIT" | "Q" => {
+                    Self::QUIT
+                }
+                "DOWNLOAD" | "D" => {
+                    match cmd_line.next() {
                         Some(idx) => {
                             match usize::from_str(idx) {
                                 Ok(idx) => {
@@ -52,9 +54,9 @@ impl FromStr for Command {
                             Self::ArgumentErr("缺少专辑索引参数".to_string())
                         }
                     }
-                } else if other.starts_with("SEARCH") || other.starts_with("S") {
-                    let parts = other.split_whitespace();
-                    match parts.skip(1).next() {
+                }
+                "SEARCH" | "S" => {
+                    match cmd_line.next() {
                         Some(keyword) => {
                             Self::SEARCH(keyword.to_string())
                         }
@@ -62,13 +64,12 @@ impl FromStr for Command {
                             Self::ArgumentErr("缺少专辑索引参数".to_string())
                         }
                     }
-                } else {
+                }
+                _ => {
                     Self::UNKNOWN
                 }
             }
-        };
-
-        Ok(cmd)
+        }))
     }
 }
 
@@ -83,6 +84,16 @@ fn print_albums(albums: Option<&Vec<Album>>) {
             println!("no albums");
         }
     }
+}
+
+fn print_commands() {
+    println!("quit(q): quit tool");
+    println!("next(n): goto next page");
+    println!("prev(p): goto prev page");
+    println!("first(f): goto first page");
+    println!("last(l): goto last page");
+    println!("download [idx](d [idx]): download album");
+    println!("search [keyword](s [keyword]): search albums with keyword");
 }
 
 async fn get_albums(searcher: &mut Option<AlbumSearcher>, command: Command) {
@@ -121,17 +132,11 @@ async fn main() {
             println!("get input error: {}", err);
         }
 
-        match FromStr::from_str(&line) {
+        match line.parse() {
             Ok(cmd) => {
                 match cmd {
                     Command::HELP => {
-                        println!("quit(q): quit tool");
-                        println!("next(n): goto next page");
-                        println!("prev(p): goto prev page");
-                        println!("first(f): goto first page");
-                        println!("last(l): goto last page");
-                        println!("download [idx](d [idx]): download album");
-                        println!("search [keyword](s [keyword]): search albums with keyword");
+                        print_commands();
                     }
                     Command::SEARCH(keyword) => {
                         *searcher = Some(AlbumSearcher::new(&keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
@@ -165,11 +170,13 @@ async fn main() {
                     }
                     Command::UNKNOWN => {
                         println!("未知的命令: {}", line.trim());
+                        print_commands();
                     }
                     Command::QUIT => {
                         println!("bye bye.");
                         return;
                     }
+                    Command::NONE => {}
                 }
             }
             Err(err) => {
