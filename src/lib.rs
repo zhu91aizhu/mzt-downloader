@@ -87,12 +87,8 @@ impl Album {
             let client = self.client.clone();
             let task = tokio::spawn(async move {
                 match Self::download_picture(client, &url, base_path).await {
-                    Ok(_) => {
-                        println!("picture {url} downloaded.");
-                    }
-                    Err(err) => {
-                        println!("{err:?}");
-                    }
+                    Ok(_) => println!("picture {url} downloaded."),
+                    Err(err) => println!("{err:?}")
                 }
             });
 
@@ -224,18 +220,17 @@ impl AlbumSearcher {
 
         let key = format!("page-{}", self.page);
         let albums = self.albums.get(&key);
-        if albums.is_none() {
-            return Err(anyhow!("current page no data"));
-        }
+        if let Some(albums) = albums {
+            if idx > albums.len() {
+                return Err(anyhow!("error album index, max index: {}", albums.len()));
+            }
 
-        let albums = albums.unwrap();
-        if idx > albums.len() {
-            return Err(anyhow!("error album index, max index: {}", albums.len()));
+            let index = idx - 1;
+            let album = &albums[index];
+            album.download_pictures("./").await
+        } else {
+            Err(anyhow!("current page no data"))
         }
-
-        let index = idx - 1;
-        let album = &albums[index];
-        album.download_pictures("./").await
     }
 }
 
