@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
+use filenamify::filenamify;
 use reqwest::Client;
+use scraper::{ElementRef, Html, Selector};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
@@ -38,23 +40,36 @@ impl Album {
 
     async fn get_page_pictures(&self, url: &str) -> Result<Vec<String>> {
         let html = get_url_content(self.client.clone(), url).await?;
+        let document = Html::parse_document(&html);
+        let selector = Selector::parse(".imgbox>.img>img").map_err(|err| {
+            anyhow!("parse selector error: {err:?}")
+        })?;
 
-        Ok(vec![
-            "https://pics0.baidu.com/feed/adaf2edda3cc7cd91e66c08e7348fa31b90e91f2.jpeg".to_string(),
-            "https://pics0.baidu.com/feed/38dbb6fd5266d016e23260f9db620f0934fa3594.jpeg".to_string(),
-            "https://pics0.baidu.com/feed/29381f30e924b89998c589ff254fc69b087bf6d0.jpeg".to_string(),
-        ])
+        let pictures: Vec<String> = document.select(&selector).into_iter().filter_map(|element| {
+            if let Some(url) = element.value().attr("src") {
+                Some(url.to_string())
+            } else {
+                None
+            }
+        }).collect();
+        Ok(pictures)
     }
 
     async fn get_all_pictures(&self) -> Result<Vec<String>> {
-        let html = get_url_content(self.client.clone(), "").await?;
+        let html = get_url_content(self.client.clone(), &self.url).await?;
         let page = self.get_pagination(&html);
 
         let mut all_pictures = vec![];
-        for current in 1..=page {
-            let url = format!("http://a.b.com/t/a_{current}.html");
-            let mut pictures = self.get_page_pictures(&url).await?;
+        if page == 1 {
+            let url = &self.url;
+            let mut pictures = self.get_page_pictures(url).await?;
             all_pictures.append(&mut pictures);
+        } else {
+            for current in 1..=page {
+                let url = format!("https://www.baidu.com/page/{}", current);
+                let mut pictures = self.get_page_pictures(&url).await?;
+                all_pictures.append(&mut pictures);
+            }
         }
 
         Ok(all_pictures)
@@ -78,7 +93,9 @@ impl Album {
     async fn download_pictures(&self, save_to_path: &str) -> Result<()> {
         let pictures = self.get_all_pictures().await?;
 
-        let path = Path::new(save_to_path).join(&self.name);
+
+        let name = filenamify(&self.name);
+        let path = Path::new(save_to_path).join(name);
         tokio::fs::create_dir_all(&path).await?;
 
         let mut tasks = vec![];
@@ -133,22 +150,48 @@ impl AlbumSearcher {
         }
     }
 
-    fn parse_page_count(&self, html: &str) -> Result<u32> {
-        Ok(1u32)
+    fn parse_page_count(&self, document: &Html) -> Result<u32> {
+        let selector = Selector::parse("#pageFooter>a").map_err(|err| {
+            anyhow!("parse selector error: {err:?}")
+        })?;
+
+        let element: Vec<ElementRef> = document.select(&selector).into_iter().collect();
+        Ok(element.len() as u32)
     }
 
     async fn parse_albums(&self) -> Result<(Vec<Album>, u32)> {
-        let url = "";
-        let html = get_url_content(self.client.clone(), url).await?;
+        let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", self.keyword, self.page);
+        let html = get_url_content(self.client.clone(), &url).await?;
+        let document = Html::parse_document(&html);
+        let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
+            anyhow!("parse selector error: {err:?}")
+        })?;
+
+        let albums = document.select(&selector).into_iter().map(|element| {
+            let href = element.value().attr("href");
+            let texts = element.text().collect::<Vec<_>>();
+            (href, texts)
+        }).filter_map(|(href, texts)| {
+            if href.is_none() || texts.is_empty() {
+                None
+            } else {
+                let url = href.unwrap().to_string();
+                let name = texts.join("");
+                Some(Album {
+                    client: self.client.clone(),
+                    name,
+                    url
+                })
+            }
+        }).collect();
 
         let page_count = if self.page_count == 0 {
-            self.parse_page_count(&html)?
+            self.parse_page_count(&document)?
         } else {
             self.page_count
         };
 
-        // TODO parse albums
-        Ok((vec![], page_count))
+        Ok((albums, page_count))
     }
 
     async fn get_albums(&mut self) -> Result<Option<&Vec<Album>>> {
@@ -227,7 +270,7 @@ impl AlbumSearcher {
 
             let index = idx - 1;
             let album = &albums[index];
-            album.download_pictures("./").await
+            album.download_pictures(".").await
         } else {
             Err(anyhow!("current page no data"))
         }
