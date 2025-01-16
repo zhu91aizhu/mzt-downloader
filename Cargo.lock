@@ -389,8 +389,8 @@ name = "gqwht-download"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "indicatif",
  "filenamify",
+ "indicatif",
  "reqwest",
  "scraper",
  "tokio",
