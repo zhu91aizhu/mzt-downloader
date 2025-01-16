@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use tracing::error;
+use tracing::{error, info};
 
 async fn get_url_content(client: Client, url: &str) -> Result<String> {
     let response = client.get(url).send().await?;
@@ -89,7 +89,10 @@ impl Album {
             let client = self.client.clone();
             let task = tokio::spawn(async move {
                 match Self::download_picture(client, &url, base_path).await {
-                    Ok(_) => println!("picture {url} downloaded."),
+                    Ok(_) => {
+                        info!("picture {url} downloaded.");
+                        println!("picture {url} downloaded.");
+                    },
                     Err(err) => {
                         error!("download picture {} error: {:?}", url, err);
                         println!("下载图片失败，详情请查看日志");
@@ -235,6 +238,7 @@ impl AlbumSearcher {
 
             let index = idx - 1;
             let album = &albums[index];
+            info!("download searcher {} page {} index album, album: {}", self.page, idx, album.name);
             album.download_pictures("./").await
         } else {
             Err(anyhow!("current page no data"))
@@ -267,4 +271,5 @@ mod tests {
             }
         });
     }
+
 }
