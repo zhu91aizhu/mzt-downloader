@@ -13,7 +13,7 @@ use gqwht_download::{Album, AlbumSearcher};
 
 #[derive(Debug)]
 enum Command {
-    HELP, FIRST, LAST, NEXT, PREV, QUIT, UNKNOWN, NONE,
+    HELP, CURRENT, FIRST, LAST, NEXT, PREV, QUIT, UNKNOWN, NONE,
     SEARCH(String), DOWNLOAD(usize), ArgumentErr(String)
 }
 
@@ -28,6 +28,9 @@ impl FromStr for Command {
             match name {
                 "HELP" | "H" => {
                     Self::HELP
+                }
+                "CURRENT" | "C" => {
+                    Self::CURRENT
                 }
                 "FIRST" | "F" => {
                     Self::FIRST
@@ -94,6 +97,7 @@ fn print_albums(albums: Option<&Vec<Album>>) {
 
 fn print_commands() {
     println!("quit(q): quit tool");
+    println!("current(c): print current page's albums");
     println!("next(n): goto next page");
     println!("prev(p): goto prev page");
     println!("first(f): goto first page");
@@ -106,6 +110,7 @@ async fn get_albums(searcher: &mut Option<AlbumSearcher>, command: Command) {
     match searcher {
         Some(ref mut searcher) => {
             let ret = match &command {
+                Command::CURRENT => searcher.current().await,
                 Command::FIRST => searcher.first().await,
                 Command::LAST => searcher.last().await,
                 Command::PREV => searcher.prev().await,
@@ -163,6 +168,9 @@ async fn main() {
                     Command::SEARCH(keyword) => {
                         info!("search {}", &keyword);
                         *searcher = Some(AlbumSearcher::new(&keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
+                    }
+                    Command::CURRENT => {
+                        get_albums(&mut searcher, Command::CURRENT).await;
                     }
                     Command::FIRST => {
                         get_albums(&mut searcher, Command::FIRST).await;
