@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 use tokio::fs::create_dir_all;
-use tracing::error;
+use tracing::{error, info};
 use tracing_appender::non_blocking;
 use tracing_appender::non_blocking::NonBlocking;
 use tracing_subscriber::fmt::layer;
@@ -153,13 +153,17 @@ async fn main() {
             println!("获取输入错误");
         }
 
+        info!("input {}", line);
+
         match line.parse() {
             Ok(cmd) => {
+                info!("input {:?} command", cmd);
                 match cmd {
                     Command::HELP => {
                         print_commands();
                     }
                     Command::SEARCH(keyword) => {
+                        info!("search {}", &keyword);
                         *searcher = Some(AlbumSearcher::new(&keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
                     }
                     Command::FIRST => {
@@ -183,7 +187,7 @@ async fn main() {
                                 }
                             }
                             None =>{
-                                error!("searcher is init");
+                                error!("searcher not init");
                                 println!("请先搜索专辑");
                             }
                         }
@@ -211,4 +215,14 @@ async fn main() {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Command;
+
+    #[test]
+    fn test_print_enum() {
+        println!("enum {:?}", Command::PREV);
+    }
 }
