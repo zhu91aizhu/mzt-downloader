@@ -261,16 +261,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
-name = "filenamify"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbc3ee3cc020bf3d428d14f0d9e4d4cb2c72df564d6a8e8b06b472b5c5d00671"
-dependencies = [
- "lazy_static",
- "regex",
-]
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -389,8 +379,9 @@ name = "gqwht-download"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "filenamify",
  "indicatif",
+ "lazy_static",
+ "regex",
  "reqwest",
  "scraper",
  "tokio",

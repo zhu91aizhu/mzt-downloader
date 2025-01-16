@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
-filenamify = "0.1.2"
 indicatif = "0.17.9"
 reqwest = "0.12.12"
 scraper = "0.22.0"
@@ -13,3 +12,5 @@ tokio = { version = "1.42.0", features = ["fs", "test-util", "rt-multi-thread", 
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = "0.3.19"
+regex = "1.11.1"
+lazy_static = "1.5.0"

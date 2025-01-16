@@ -3,13 +3,13 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
-use filenamify::filenamify;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use reqwest::Client;
 use scraper::{ElementRef, Html, Selector};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
+use crate::util::filenamify;
 
 async fn get_url_content(client: Client, url: &str) -> Result<String> {
     let response = client.get(url).send().await?;
@@ -97,8 +97,7 @@ impl Album {
     async fn download_pictures(&self, save_to_path: &str) -> Result<()> {
         let pictures = self.get_all_pictures().await?;
 
-
-        let name = filenamify(&self.name);
+        let name = filenamify(&self.name, "");
         let path = Path::new(save_to_path).join(name);
         tokio::fs::create_dir_all(&path).await?;
 
@@ -302,11 +301,37 @@ impl AlbumSearcher {
             let index = idx - 1;
             let album = &albums[index];
             info!("download searcher {} page {} index album, album: {}", self.page, idx, album.name);
-            album.download_pictures("./").await
+            album.download_pictures("./albums/").await
         } else {
             Err(anyhow!("current page no data"))
         }
     }
+}
+
+mod util {
+    use regex::Regex;
+
+    use lazy_static::lazy_static;
+
+    lazy_static! {
+        static ref RESERVED: Regex =
+            Regex::new("[<>:\"/\\\\|?*\u{0000}-\u{001F}\u{007F}\u{0080}-\u{009F}]+").unwrap();
+        static ref WINDOWS_RESERVED: Regex = Regex::new("^(con|prn|aux|nul|com\\d|lpt\\d)$").unwrap();
+        static ref OUTER_PERIODS: Regex = Regex::new("^\\.+|\\.+$").unwrap();
+    }
+
+    pub(super) fn filenamify<S: AsRef<str>>(input: S, replacement: &str) -> String {
+        let input = RESERVED.replace_all(input.as_ref(), replacement);
+        let input = OUTER_PERIODS.replace_all(input.as_ref(), replacement);
+
+        let mut result = input.into_owned();
+        if WINDOWS_RESERVED.is_match(result.as_str()) {
+            result.push_str(replacement);
+        }
+
+        result
+    }
+
 }
 
 #[cfg(test)]
