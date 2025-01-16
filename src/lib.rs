@@ -21,6 +21,7 @@ pub struct Album {
 }
 
 impl Album {
+
     fn get_picture_name(url: &str) -> Result<String> {
         let path = Path::new(url);
         if let Some(file_name) = path.file_name() {
@@ -105,6 +106,8 @@ impl Album {
     }
 }
 
+pub type AlbumResult<'a> = Result<Option<&'a Vec<Album>>>;
+
 pub struct AlbumSearcher {
     client: Client,
     page: u32,
@@ -151,7 +154,7 @@ impl AlbumSearcher {
         Ok((vec![], page_count))
     }
 
-    async fn get_albums(&mut self) -> Result<Option<&Vec<Album>>> {
+    async fn get_albums(&mut self) -> AlbumResult {
         let key = format!("page-{}", &self.page);
         if self.albums.contains_key(&key) {
             Ok(self.albums.get(&key))
@@ -166,7 +169,7 @@ impl AlbumSearcher {
         }
     }
 
-    pub async fn prev(&mut self) -> Result<Option<&Vec<Album>>> {
+    pub async fn prev(&mut self) -> AlbumResult {
         if self.page > 1 {
             self.page -= 1;
         } else {
@@ -177,7 +180,7 @@ impl AlbumSearcher {
         self.get_albums().await
     }
 
-    pub async fn next(&mut self) -> Result<Option<&Vec<Album>>> {
+    pub async fn next(&mut self) -> AlbumResult {
         if self.page_count == 0 {
             // 当搜索器初始化后，分页总数未被初始化
             self.page = 1;
@@ -190,12 +193,12 @@ impl AlbumSearcher {
         self.get_albums().await
     }
 
-    pub async fn first(&mut self) -> Result<Option<&Vec<Album>>> {
+    pub async fn first(&mut self) -> AlbumResult {
         self.page = 1;
         self.get_albums().await
     }
 
-    pub async fn last(&mut self) -> Result<Option<&Vec<Album>>> {
+    pub async fn last(&mut self) -> AlbumResult {
         if self.page_count == 0 {
             // 解析第一页内容，并获取分页总数
             self.next().await?;
