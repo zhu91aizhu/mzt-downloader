@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use filenamify::filenamify;
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use reqwest::Client;
 use scraper::{ElementRef, Html, Selector};
 use tokio::fs::File;
@@ -100,6 +102,13 @@ impl Album {
         let path = Path::new(save_to_path).join(name);
         tokio::fs::create_dir_all(&path).await?;
 
+        let pb = ProgressBar::new(pictures.len() as u64);
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+            .unwrap()
+            .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+            .progress_chars("#>-"));
+        let mut downloaded_count = 0;
+
         let mut tasks = vec![];
         for url in pictures {
             let base_path = path.clone();
@@ -108,7 +117,6 @@ impl Album {
                 match Self::download_picture(client, &url, base_path).await {
                     Ok(_) => {
                         info!("picture {url} downloaded.");
-                        println!("picture {url} downloaded.");
                     },
                     Err(err) => {
                         error!("download picture {} error: {:?}", url, err);
@@ -124,9 +132,13 @@ impl Album {
             if let Err(err) = task.await {
                 error!("download picture task error: {:?}", err);
                 println!("下载图片失败，详情请查看日志");
+            } else {
+                downloaded_count += 1;
+                pb.set_position(downloaded_count);
             }
         }
 
+        pb.finish_with_message("下载完成");
         Ok(())
     }
 }
