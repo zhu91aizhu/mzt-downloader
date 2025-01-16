@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tracing::error;
 
 async fn get_url_content(client: Client, url: &str) -> Result<String> {
     let response = client.get(url).send().await?;
@@ -89,7 +90,10 @@ impl Album {
             let task = tokio::spawn(async move {
                 match Self::download_picture(client, &url, base_path).await {
                     Ok(_) => println!("picture {url} downloaded."),
-                    Err(err) => println!("{err:?}")
+                    Err(err) => {
+                        error!("download picture {} error: {:?}", url, err);
+                        println!("下载图片失败，详情请查看日志");
+                    }
                 }
             });
 
@@ -98,7 +102,8 @@ impl Album {
 
         for task in tasks {
             if let Err(err) = task.await {
-                println!("download error: {err:?}");
+                error!("download picture task error: {:?}", err);
+                println!("下载图片失败，详情请查看日志");
             }
         }
 
