@@ -86,11 +86,10 @@ impl Album {
         tokio::fs::create_dir_all(&path).await?;
 
         let pb = ProgressBar::new(pictures.len() as u64);
-        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})")
             .unwrap()
             .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
             .progress_chars("#>-"));
-        let mut downloaded_count = 0;
 
         let mut tasks = vec![];
         for url in pictures {
@@ -99,6 +98,7 @@ impl Album {
             let task = tokio::spawn(async move {
                 match Self::download_picture(client, &url, base_path).await {
                     Ok(_) => {
+                        pb.inc(1);
                         info!("picture {url} downloaded.");
                     },
                     Err(err) => {
@@ -115,9 +115,6 @@ impl Album {
             if let Err(err) = task.await {
                 error!("download picture task error: {:?}", err);
                 println!("下载图片失败，详情请查看日志");
-            } else {
-                downloaded_count += 1;
-                pb.set_position(downloaded_count);
             }
         }
 
