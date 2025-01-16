@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-
+use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use reqwest::Client;
@@ -85,7 +85,7 @@ impl Album {
         let path = Path::new(save_to_path).join(&self.name);
         tokio::fs::create_dir_all(&path).await?;
 
-        let pb = ProgressBar::new(pictures.len() as u64);
+        let pb = Arc::new(ProgressBar::new(pictures.len() as u64));
         pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({eta})")
             .unwrap()
             .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
@@ -95,6 +95,8 @@ impl Album {
         for url in pictures {
             let base_path = path.clone();
             let client = self.client.clone();
+            let pb = pb.clone();
+
             let task = tokio::spawn(async move {
                 match Self::download_picture(client, &url, base_path).await {
                     Ok(_) => {
