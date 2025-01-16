@@ -153,8 +153,6 @@ async fn main() {
             println!("获取输入错误");
         }
 
-        info!("input {}", line);
-
         match line.parse() {
             Ok(cmd) => {
                 info!("input {:?} command", cmd);
@@ -209,7 +207,7 @@ async fn main() {
                 }
             }
             Err(err) => {
-                error!("parse command error: {:?}", err);
+                error!("parse {} command error: {:?}", line, err);
                 println!("解析命令失败: {:?}", err);
             }
         }
