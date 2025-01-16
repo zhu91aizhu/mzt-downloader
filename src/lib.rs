@@ -190,6 +190,11 @@ impl AlbumSearcher {
     }
 
     pub async fn current(&mut self) -> AlbumResult {
+        if self.page_count == 0 {
+            // 当搜索器初始化后，分页总数未被初始化
+            self.page = 1;
+        }
+
         self.get_albums().await
     }
 
