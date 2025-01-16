@@ -177,6 +177,10 @@ impl AlbumSearcher {
         }
     }
 
+    pub async fn current(&mut self) -> AlbumResult {
+        self.get_albums().await
+    }
+
     pub async fn prev(&mut self) -> AlbumResult {
         if self.page > 1 {
             self.page -= 1;
