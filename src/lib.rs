@@ -1,13 +1,19 @@
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::process::Output;
 use std::sync::Arc;
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use reqwest::Client;
+use scraper::{ElementRef, Html, Selector};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
+use crate::util::filenamify;
 
 async fn get_url_content(client: Client, url: &str) -> Result<String> {
     let response = client.get(url).send().await?;
@@ -20,57 +26,19 @@ async fn get_url_content(client: Client, url: &str) -> Result<String> {
 pub struct Album {
     client: Client,
     pub name: String,
-    url: String
+    url: String,
+    parser: Arc<dyn Parser>
 }
 
 impl Album {
 
-    fn get_picture_name(url: &str) -> Result<String> {
-        let path = Path::new(url);
-        if let Some(file_name) = path.file_name() {
-            file_name.to_str().map(|s| {
-                s.to_string()
-            }).ok_or(anyhow!("get file name error: {url}"))
-        } else {
-            Err(anyhow!("get file name error: {url}"))
-        }
-    }
-
-    fn get_pagination(&self, html: &str) -> usize {
-        1usize
-    }
-
-    async fn get_page_pictures(&self, url: &str) -> Result<Vec<String>> {
-        let html = get_url_content(self.client.clone(), url).await?;
-
-        Ok(vec![
-            "https://pics0.baidu.com/feed/adaf2edda3cc7cd91e66c08e7348fa31b90e91f2.jpeg".to_string(),
-            "https://pics0.baidu.com/feed/38dbb6fd5266d016e23260f9db620f0934fa3594.jpeg".to_string(),
-            "https://pics0.baidu.com/feed/29381f30e924b89998c589ff254fc69b087bf6d0.jpeg".to_string(),
-        ])
-    }
-
-    async fn get_all_pictures(&self) -> Result<Vec<String>> {
-        let html = get_url_content(self.client.clone(), "").await?;
-        let page = self.get_pagination(&html);
-
-        let mut all_pictures = vec![];
-        for current in 1..=page {
-            let url = format!("http://a.b.com/t/a_{current}.html");
-            let mut pictures = self.get_page_pictures(&url).await?;
-            all_pictures.append(&mut pictures);
-        }
-
-        Ok(all_pictures)
-    }
-
-    async fn download_picture(client: Client, url: &str, save_to_path: PathBuf) -> Result<()> {
+    async fn download_picture(&self, client: Client, parser: Arc<dyn Parser>, url: &str, save_to_path: PathBuf) -> Result<()> {
         let response = client.get(url).send().await?;
         if !response.status().is_success() {
             return Err(anyhow!("send get picture request error: {}", response.status()))
         }
 
-        let picture_name = Self::get_picture_name(url)?;
+        let picture_name = self.parser.get_picture_name(url)?;
         let path = save_to_path.join(picture_name);
         let bytes = response.bytes().await?;
         let mut file = File::create(path).await?;
@@ -79,10 +47,10 @@ impl Album {
         Ok(())
     }
 
-    async fn download_pictures(&self, save_to_path: &str) -> Result<()> {
-        let pictures = self.get_all_pictures().await?;
-
-        let path = Path::new(save_to_path).join(&self.name);
+    async fn download_pictures(self: Arc<Self>, parser: Arc<dyn Parser>, save_to_path: &str) -> Result<()> {
+        let pictures = parser.get_all_pictures(self.url.clone()).await?;
+        let name = filenamify(&self.name, "");
+        let path = Path::new(save_to_path).join(name);
         tokio::fs::create_dir_all(&path).await?;
 
         let pb = Arc::new(ProgressBar::new(pictures.len() as u64));
@@ -94,11 +62,12 @@ impl Album {
         let mut tasks = vec![];
         for url in pictures {
             let base_path = path.clone();
-            let client = self.client.clone();
             let pb = pb.clone();
-
-            let task = tokio::spawn(async move {
-                match Self::download_picture(client, &url, base_path).await {
+            let client = self.client.clone();
+            let p = parser.clone();
+            let it = Arc::clone(&self);
+            let task = tokio::task::spawn(async move {
+                match it.download_picture(client, p, &url, base_path).await {
                     Ok(_) => {
                         pb.inc(1);
                         info!("picture {url} downloaded.");
@@ -127,8 +96,181 @@ impl Album {
 
 pub type AlbumResult<'a> = Result<Option<&'a Vec<Album>>>;
 
+#[async_trait]
+trait Parser: Send + Sync {
+
+    fn parse_page_count(&self, document: &Html) -> Result<u32>;
+
+    async fn parse_albums(&self, page: u32) -> Result<(Vec<Album>, u32)>;
+
+    fn get_pagination(&self, html: &str) -> usize;
+
+    async fn get_page_pictures(&self, url: String) -> Result<Vec<String>>;
+
+    async fn get_all_pictures(&self, url: String) -> Result<Vec<String>>;
+
+    fn get_picture_name(&self, url: &str) -> Result<String>;
+
+}
+
+#[derive(Clone)]
+struct DiLi360Parser {
+    client: Box<Client>,
+    page: u32,
+    page_count: u32,
+    size: u32,
+    keyword: Box<String>
+}
+
+impl DiLi360Parser {
+    fn new(keyword: &str, size: u32) -> Self {
+        Self {
+            client: Box::new(Client::new()),
+            page: 0,
+            page_count: 0,
+            size,
+            keyword: Box::new(keyword.to_string())
+        }
+    }
+}
+
+#[async_trait]
+impl Parser for DiLi360Parser {
+
+    fn parse_page_count(&self, document: &Html) -> Result<u32> {
+        let selector = Selector::parse("#pageFooter>a").map_err(|err| {
+            anyhow!("parse selector error: {err:?}")
+        })?;
+
+        let element: Vec<ElementRef> = document.select(&selector).into_iter().collect();
+        Ok(element.len() as u32)
+    }
+
+    async fn parse_albums(&self, page: u32) -> Result<(Vec<Album>, u32)> {
+        let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", self.keyword, page);
+        let html = get_url_content(*self.client.clone(), &url).await?;
+        let document = Html::parse_document(&html);
+        let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
+            anyhow!("parse selector error: {err:?}")
+        })?;
+
+        let albums = document.select(&selector).into_iter().map(|element| {
+            let href = element.value().attr("href");
+            let texts = element.text().collect::<Vec<_>>();
+            (href, texts)
+        }).filter_map(|(href, texts)| {
+            if href.is_none() || texts.is_empty() {
+                None
+            } else {
+                let url = href.unwrap().to_string();
+                let name = texts.join("");
+                Some(Album {
+                    client: *self.client.clone(),
+                    name,
+                    url,
+                    parser: Arc::new(self.clone())
+                })
+            }
+        }).collect();
+
+        let page_count = if self.page_count == 0 {
+            self.parse_page_count(&document)?
+        } else {
+            self.page_count
+        };
+
+        Ok((albums, page_count))
+    }
+
+    fn get_pagination(&self, html: &str) -> usize {
+        1
+    }
+
+    async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
+        let html = get_url_content(*self.client.clone(), &url).await?;
+        let document = Html::parse_document(&html);
+        let selector = Selector::parse(".imgbox>.img>img").map_err(|err| {
+            anyhow!("parse selector error: {err:?}")
+        })?;
+
+        let pictures: Vec<String> = document.select(&selector).into_iter().filter_map(|element| {
+            if let Some(url) = element.value().attr("src") {
+                Some(url.to_string())
+            } else {
+                None
+            }
+        }).collect();
+        Ok(pictures)
+    }
+
+    async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
+        let pictures = self.get_page_pictures(url).await?;
+        Ok(pictures)
+    }
+
+    fn get_picture_name(&self,  url: &str) -> Result<String> {
+        let path = Path::new(url);
+        if let Some(file_name) = path.file_name() {
+            file_name.to_str().map(|s| {
+                s.to_string()
+            }).ok_or(anyhow!("get file name error: {url}"))
+        } else {
+            Err(anyhow!("get file name error: {url}"))
+        }
+    }
+
+}
+
+#[derive(Clone)]
+struct MZTParser {
+    client: Box<Client>,
+    page: u32,
+    page_count: u32,
+    size: u32,
+    keyword: Box<String>
+}
+
+impl MZTParser {
+    fn new(keyword: &str, size: u32) -> Self {
+        Self {
+            client: Box::new(Client::new()),
+            page: 0,
+            page_count: 0,
+            size,
+            keyword: Box::new(keyword.to_string())
+        }
+    }
+}
+
+#[async_trait]
+impl Parser for MZTParser {
+    fn parse_page_count(&self, document: &Html) -> Result<u32> {
+        todo!()
+    }
+
+    async fn parse_albums(&self, page: u32) -> Result<(Vec<Album>, u32)> {
+        todo!()
+    }
+
+    fn get_pagination(&self, html: &str) -> usize {
+        todo!()
+    }
+
+    async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
+        todo!()
+    }
+
+    async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
+        todo!()
+    }
+
+    fn get_picture_name(&self, url: &str) -> Result<String> {
+        todo!()
+    }
+}
+
 pub struct AlbumSearcher {
-    client: Client,
+    parser: Arc<dyn Parser>,
     page: u32,
     page_count: u32,
     size: u32,
@@ -137,40 +279,34 @@ pub struct AlbumSearcher {
 }
 
 impl AlbumSearcher {
+
     pub const DEFAULT_PAGE_SIZE: u32 = 10u32;
 
-    pub fn new(keyword: &str, size: u32) -> Self {
+    pub fn new(parser: String, keyword: &str, size: u32) -> Self {
         let mut size = size;
         if size < 1 {
-            size = 10;
+            size = Self::DEFAULT_PAGE_SIZE;
         }
 
-        Self {
-            client: Client::new(),
-            page: 0,
-            page_count: 0,
-            size,
-            keyword: keyword.to_string(),
-            albums: HashMap::new()
-        }
-    }
-
-    fn parse_page_count(&self, html: &str) -> Result<u32> {
-        Ok(1u32)
-    }
-
-    async fn parse_albums(&self) -> Result<(Vec<Album>, u32)> {
-        let url = "";
-        let html = get_url_content(self.client.clone(), url).await?;
-
-        let page_count = if self.page_count == 0 {
-            self.parse_page_count(&html)?
+        if parser.to_uppercase() == "MZT" {
+            Self {
+                parser: Arc::new(MZTParser::new(keyword, size)),
+                page: 0,
+                page_count: 0,
+                size,
+                keyword: keyword.to_string(),
+                albums: HashMap::new()
+            }
         } else {
-            self.page_count
-        };
-
-        // TODO parse albums
-        Ok((vec![], page_count))
+            Self {
+                parser: Arc::new(DiLi360Parser::new(keyword, size)),
+                page: 0,
+                page_count: 0,
+                size,
+                keyword: keyword.to_string(),
+                albums: HashMap::new()
+            }
+        }
     }
 
     async fn get_albums(&mut self) -> AlbumResult {
@@ -179,10 +315,13 @@ impl AlbumSearcher {
             Ok(self.albums.get(&key))
         } else {
             // 获取新数据
-            let (albums, page_count) = self.parse_albums().await?;
-            if self.page_count == 0 {
+            let (albums, page_count) = self.parser.parse_albums(self.page).await?;
+            // page_count 表示第一次获取数据，总页数没有赋值
+            // 有些网站不能获取到总页数，通过每次获取数据时，更新页码总数
+            if self.page_count == 0 || self.page_count < page_count {
                 self.page_count = page_count;
             }
+
             self.albums.insert(key.clone(), albums);
             Ok(self.albums.get(&key))
         }
@@ -259,11 +398,38 @@ impl AlbumSearcher {
             let index = idx - 1;
             let album = &albums[index];
             info!("download searcher {} page {} index album, album: {}", self.page, idx, album.name);
-            album.download_pictures("./").await
+            let parser = self.parser.clone();
+            let a = Arc::new(album.clone());
+            a.download_pictures(parser.clone(), "./albums/").await
         } else {
             Err(anyhow!("current page no data"))
         }
     }
+}
+
+mod util {
+    use regex::Regex;
+    use lazy_static::lazy_static;
+
+    lazy_static! {
+        static ref RESERVED: Regex =
+            Regex::new("[<>:\"/\\\\|?*\u{0000}-\u{001F}\u{007F}\u{0080}-\u{009F}]+").unwrap();
+        static ref WINDOWS_RESERVED: Regex = Regex::new("^(con|prn|aux|nul|com\\d|lpt\\d)$").unwrap();
+        static ref OUTER_PERIODS: Regex = Regex::new("^\\.+|\\.+$").unwrap();
+    }
+
+    pub(super) fn filenamify<S: AsRef<str>>(input: S, replacement: &str) -> String {
+        let input = RESERVED.replace_all(input.as_ref(), replacement);
+        let input = OUTER_PERIODS.replace_all(input.as_ref(), replacement);
+
+        let mut result = input.into_owned();
+        if WINDOWS_RESERVED.is_match(result.as_str()) {
+            result.push_str(replacement);
+        }
+
+        result
+    }
+
 }
 
 #[cfg(test)]
@@ -273,17 +439,21 @@ mod tests {
 
     #[test]
     fn test_download_album() {
-        let album = Album {
-            client: Client::new(),
-            name: "壁纸".to_string(),
-            url: "none".to_string()
-        };
-
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            match album.download_pictures("./").await {
+            let mut searcher = AlbumSearcher::new("dili360".to_string(), "云南", AlbumSearcher::DEFAULT_PAGE_SIZE);
+            let ret = searcher.next().await;
+            assert!(ret.is_ok());
+
+            let opt = ret.unwrap();
+            assert!(opt.is_some());
+
+            let albums = opt.unwrap();
+            assert_eq!(albums.len(), 10usize);
+
+            match searcher.download(6).await {
                 Ok(_) => {
-                    println!("album {} downloaded.", &album.name);
+                    println!("album downloaded.");
                 }
                 Err(err) => {
                     println!("download album error: {err:?}");

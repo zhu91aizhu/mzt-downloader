@@ -167,7 +167,7 @@ async fn main() {
                     }
                     Command::SEARCH(keyword) => {
                         info!("search {}", &keyword);
-                        *searcher = Some(AlbumSearcher::new(&keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
+                        *searcher = Some(AlbumSearcher::new("DiLi360".to_string(), &keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
                     }
                     Command::CURRENT => {
                         get_albums(&mut searcher, Command::CURRENT).await;
