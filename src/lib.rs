@@ -4,7 +4,10 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Output;
+use std::str::FromStr;
+use std::string::ToString;
 use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
@@ -13,6 +16,7 @@ use scraper::{ElementRef, Html, Selector};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
+
 use crate::util::filenamify;
 
 async fn get_url_content(client: Client, url: &str) -> Result<String> {
@@ -96,12 +100,38 @@ impl Album {
 
 pub type AlbumResult<'a> = Result<Option<&'a Vec<Album>>>;
 
+pub mod parser {
+    use std::sync::Arc;
+
+    use anyhow::{anyhow, Result};
+
+    use crate::{DiLi360Parser, MZTParser, Parser};
+
+    pub fn parse(parser_code: &str) -> Result<Arc<dyn Parser>> {
+        match parser_code.to_uppercase().as_str() {
+            DiLi360Parser::PARSER_CODE => {
+                Ok(Arc::new(DiLi360Parser::new()))
+            }
+            MZTParser::PARSER_CODE => {
+                Ok(Arc::new(MZTParser::new()))
+            }
+            _ => Err(anyhow!("不支持的解析器: {}", parser_code))
+        }
+    }
+
+    pub fn default_parser() -> Arc<dyn Parser> {
+        Arc::new(DiLi360Parser::new())
+    }
+}
+
 #[async_trait]
-trait Parser: Send + Sync {
+pub trait Parser: Send + Sync {
+
+    fn parser_name(&self) -> String;
 
     fn parse_page_count(&self, document: &Html) -> Result<u32>;
 
-    async fn parse_albums(&self, page: u32) -> Result<(Vec<Album>, u32)>;
+    async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)>;
 
     fn get_pagination(&self, html: &str) -> usize;
 
@@ -117,25 +147,30 @@ trait Parser: Send + Sync {
 struct DiLi360Parser {
     client: Box<Client>,
     page: u32,
-    page_count: u32,
-    size: u32,
-    keyword: Box<String>
+    page_count: u32
 }
 
 impl DiLi360Parser {
-    fn new(keyword: &str, size: u32) -> Self {
+
+    const PARSER_CODE: &'static str = "DILI360";
+
+    const PARSER_NAME: &'static str = "中国地理";
+
+    fn new() -> Self {
         Self {
             client: Box::new(Client::new()),
             page: 0,
-            page_count: 0,
-            size,
-            keyword: Box::new(keyword.to_string())
+            page_count: 0
         }
     }
 }
 
 #[async_trait]
 impl Parser for DiLi360Parser {
+
+    fn parser_name(&self) -> String {
+        DiLi360Parser::PARSER_NAME.to_string()
+    }
 
     fn parse_page_count(&self, document: &Html) -> Result<u32> {
         let selector = Selector::parse("#pageFooter>a").map_err(|err| {
@@ -146,9 +181,9 @@ impl Parser for DiLi360Parser {
         Ok(element.len() as u32)
     }
 
-    async fn parse_albums(&self, page: u32) -> Result<(Vec<Album>, u32)> {
+    async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
         // 地理 360 搜索结果页面从 0 开始
-        let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", self.keyword, page - 1);
+        let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", &keyword, page - 1);
         let html = get_url_content(*self.client.clone(), &url).await?;
         let document = Html::parse_document(&html);
         let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
@@ -226,30 +261,36 @@ impl Parser for DiLi360Parser {
 struct MZTParser {
     client: Box<Client>,
     page: u32,
-    page_count: u32,
-    size: u32,
-    keyword: Box<String>
+    page_count: u32
 }
 
 impl MZTParser {
-    fn new(keyword: &str, size: u32) -> Self {
+
+    const PARSER_CODE: &'static str = "MZT";
+
+    const PARSER_NAME: &'static str = "妹子图";
+
+    fn new() -> Self {
         Self {
             client: Box::new(Client::new()),
             page: 0,
-            page_count: 0,
-            size,
-            keyword: Box::new(keyword.to_string())
+            page_count: 0
         }
     }
 }
 
 #[async_trait]
 impl Parser for MZTParser {
+
+    fn parser_name(&self) -> String {
+        MZTParser::PARSER_NAME.to_string()
+    }
+
     fn parse_page_count(&self, document: &Html) -> Result<u32> {
         todo!()
     }
 
-    async fn parse_albums(&self, page: u32) -> Result<(Vec<Album>, u32)> {
+    async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
         todo!()
     }
 
@@ -283,30 +324,19 @@ impl AlbumSearcher {
 
     pub const DEFAULT_PAGE_SIZE: u32 = 10u32;
 
-    pub fn new(parser: String, keyword: &str, size: u32) -> Self {
+    pub fn new(parser: Arc<dyn Parser>, keyword: &str, size: u32) -> Self {
         let mut size = size;
         if size < 1 {
             size = Self::DEFAULT_PAGE_SIZE;
         }
 
-        if parser.to_uppercase() == "MZT" {
-            Self {
-                parser: Arc::new(MZTParser::new(keyword, size)),
-                page: 0,
-                page_count: 0,
-                size,
-                keyword: keyword.to_string(),
-                albums: HashMap::new()
-            }
-        } else {
-            Self {
-                parser: Arc::new(DiLi360Parser::new(keyword, size)),
-                page: 0,
-                page_count: 0,
-                size,
-                keyword: keyword.to_string(),
-                albums: HashMap::new()
-            }
+        Self {
+            parser,
+            page: 0,
+            page_count: 0,
+            size,
+            keyword: keyword.to_string(),
+            albums: HashMap::new()
         }
     }
 
@@ -316,7 +346,8 @@ impl AlbumSearcher {
             Ok(self.albums.get(&key))
         } else {
             // 获取新数据
-            let (albums, page_count) = self.parser.parse_albums(self.page).await?;
+            let (albums, page_count) = self.parser.parse_albums(
+                self.keyword.clone(), self.page, self.size).await?;
             // page_count 表示第一次获取数据，总页数没有赋值
             // 有些网站不能获取到总页数，通过每次获取数据时，更新页码总数
             if self.page_count == 0 || self.page_count < page_count {
@@ -409,8 +440,8 @@ impl AlbumSearcher {
 }
 
 mod util {
-    use regex::Regex;
     use lazy_static::lazy_static;
+    use regex::Regex;
 
     lazy_static! {
         static ref RESERVED: Regex =
@@ -436,13 +467,16 @@ mod util {
 #[cfg(test)]
 mod tests {
     use tokio;
+
     use super::*;
 
     #[test]
     fn test_download_album() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let mut searcher = AlbumSearcher::new("dili360".to_string(), "云南", AlbumSearcher::DEFAULT_PAGE_SIZE);
+            let parser = parser::default_parser();
+            let mut searcher = AlbumSearcher::new(parser, "云南", AlbumSearcher::DEFAULT_PAGE_SIZE);
+            let ret = searcher.next().await;
             let ret = searcher.next().await;
             assert!(ret.is_ok());
 

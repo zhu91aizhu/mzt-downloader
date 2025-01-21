@@ -9,12 +9,12 @@ use tracing_appender::non_blocking::NonBlocking;
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::{Layer, registry};
 use tracing_subscriber::layer::SubscriberExt;
-use gqwht_download::{Album, AlbumSearcher};
+use gqwht_download::{Album, AlbumSearcher, parser};
 
 #[derive(Debug)]
 enum Command {
     HELP, CURRENT, FIRST, LAST, NEXT, PREV, QUIT, UNKNOWN, NONE,
-    SEARCH(String), DOWNLOAD(usize), ArgumentErr(String)
+    SWITCH(String), SEARCH(String), DOWNLOAD(usize), ArgumentErr(String)
 }
 
 impl FromStr for Command {
@@ -64,6 +64,16 @@ impl FromStr for Command {
                         }
                     }
                 }
+                "SWITCH" | "T" => {
+                    match cmd_line.next() {
+                        Some(parser) => {
+                            Self::SWITCH(parser.to_string())
+                        }
+                        None => {
+                            Self::ArgumentErr("缺少解析器参数".to_string())
+                        }
+                    }
+                }
                 "SEARCH" | "S" => {
                     match cmd_line.next() {
                         Some(keyword) => {
@@ -98,6 +108,7 @@ fn print_albums(albums: Option<&Vec<Album>>) {
 fn print_commands() {
     println!("quit(q): quit tool");
     println!("current(c): print current page's albums");
+    println!("switch(t): switch album parser(MZT, DiLi360)");
     println!("next(n): goto next page");
     println!("prev(p): goto prev page");
     println!("first(f): goto first page");
@@ -147,6 +158,7 @@ async fn main() {
 
     let mut searcher_opt = None;
     let mut searcher = &mut searcher_opt;
+    let mut parser = parser::default_parser();
 
     loop {
         print!("-> ");
@@ -165,9 +177,22 @@ async fn main() {
                     Command::HELP => {
                         print_commands();
                     }
+                    Command::SWITCH(parser_code) => {
+                        match parser::parse(&parser_code) {
+                            Ok(new_parser) => {
+                                parser = new_parser;
+                                println!("切换到解析器成功");
+                                info!("switch to {} parser successful", parser_code);
+                            }
+                            Err(err) => {
+                                error!("switch parser error: {:?}", err);
+                                println!("切换解析器失败，详情请查看日志");
+                            }
+                        }
+                    }
                     Command::SEARCH(keyword) => {
                         info!("search {}", &keyword);
-                        *searcher = Some(AlbumSearcher::new("DiLi360".to_string(), &keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
+                        *searcher = Some(AlbumSearcher::new(parser.clone(), &keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
                     }
                     Command::CURRENT => {
                         get_albums(&mut searcher, Command::CURRENT).await;
