@@ -147,7 +147,8 @@ impl Parser for DiLi360Parser {
     }
 
     async fn parse_albums(&self, page: u32) -> Result<(Vec<Album>, u32)> {
-        let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", self.keyword, page);
+        // 地理 360 搜索结果页面从 0 开始
+        let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", self.keyword, page - 1);
         let html = get_url_content(*self.client.clone(), &url).await?;
         let document = Html::parse_document(&html);
         let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
