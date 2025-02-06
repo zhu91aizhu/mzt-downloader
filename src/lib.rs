@@ -15,6 +15,7 @@ use reqwest::Client;
 use scraper::{ElementRef, Html, Selector};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 use tracing::{error, info};
 
 use crate::util::filenamify;
@@ -63,8 +64,11 @@ impl Album {
             .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
             .progress_chars("#>-"));
 
+        let semaphore = Arc::new(Semaphore::new(16));
         let mut tasks = vec![];
         for url in pictures {
+            let permit = semaphore.clone().acquire_owned().await?;
+
             let base_path = path.clone();
             let pb = pb.clone();
             let client = self.client.clone();
@@ -81,6 +85,8 @@ impl Album {
                         println!("下载图片失败，详情请查看日志");
                     }
                 }
+
+                drop(permit);
             });
 
             tasks.push(task);
