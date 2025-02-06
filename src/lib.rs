@@ -31,21 +31,18 @@ async fn get_url_content(client: Client, url: &str) -> Result<String> {
 
 #[derive(Clone)]
 pub struct Album {
-    client: Client,
     pub name: String,
-    url: String,
-    parser: Arc<dyn Parser>
+    url: String
 }
 
 impl Album {
 
-    async fn download_picture(&self, client: Client, parser: Arc<dyn Parser>, url: &str, save_to_path: PathBuf) -> Result<()> {
-        let response = client.get(url).send().await?;
-        if !response.status().is_success() {
-            return Err(anyhow!("send get picture request error: {}", response.status()))
-        }
+    async fn download_picture(&self, client: &Client, parser: &dyn Parser, url: &str, save_to_path: PathBuf) -> Result<()> {
+        let response = client.get(url).send().await.map_err(|e| {
+            anyhow!("Failed to send request for {}: {}", url, e)
+        })?;
 
-        let picture_name = self.parser.get_picture_name(url)?;
+        let picture_name = parser.get_picture_name(url)?;
         let path = save_to_path.join(picture_name);
         let bytes = response.bytes().await?;
         let mut file = File::create(path).await?;
@@ -54,7 +51,7 @@ impl Album {
         Ok(())
     }
 
-    async fn download_pictures(self: Arc<Self>, parser: Arc<dyn Parser>, save_to_path: &str) -> Result<()> {
+    async fn download_pictures(self: Arc<Self>, client: &Client, parser: Arc<dyn Parser>, save_to_path: &str) -> Result<()> {
         let pictures = parser.get_all_pictures(self.url.clone()).await?;
         let name = filenamify(&self.name, "");
         let path = Path::new(save_to_path).join(name);
@@ -73,11 +70,11 @@ impl Album {
 
             let base_path = path.clone();
             let pb = pb.clone();
-            let client = self.client.clone();
+            let client = client.clone();
             let p = parser.clone();
             let it = Arc::clone(&self);
             let task = tokio::task::spawn(async move {
-                match it.download_picture(client, p, &url, base_path).await {
+                match it.download_picture(&client, &*p, &url, base_path).await {
                     Ok(_) => {
                         pb.inc(1);
                         info!("picture {url} downloaded.");
@@ -132,10 +129,29 @@ pub mod parser {
     }
 }
 
+#[derive(Clone)]
+struct InnerParser {
+    client: Client,
+    page: u32,
+    page_count: u32
+}
+
+impl InnerParser {
+    fn new() -> Self {
+        Self {
+            client: Client::new(),
+            page: 0,
+            page_count: 0
+        }
+    }
+}
+
 #[async_trait]
 pub trait Parser: Send + Sync {
 
     fn parser_name(&self) -> String;
+
+    fn client(&self) -> Arc<&Client>;
 
     fn parse_page_count(&self, document: &Html) -> Result<u32>;
 
@@ -153,9 +169,7 @@ pub trait Parser: Send + Sync {
 
 #[derive(Clone)]
 struct DiLi360Parser {
-    client: Client,
-    page: u32,
-    page_count: u32
+    inner: InnerParser
 }
 
 impl DiLi360Parser {
@@ -166,9 +180,7 @@ impl DiLi360Parser {
 
     fn new() -> Self {
         Self {
-            client: Client::new(),
-            page: 0,
-            page_count: 0
+            inner: InnerParser::new()
         }
     }
 }
@@ -178,6 +190,10 @@ impl Parser for DiLi360Parser {
 
     fn parser_name(&self) -> String {
         DiLi360Parser::PARSER_NAME.to_string()
+    }
+
+    fn client(&self) -> Arc<&Client> {
+        Arc::new(&self.inner.client)
     }
 
     fn parse_page_count(&self, document: &Html) -> Result<u32> {
@@ -192,7 +208,7 @@ impl Parser for DiLi360Parser {
     async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
         // 地理 360 搜索结果页面从 0 开始
         let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", &keyword, page - 1);
-        let html = get_url_content(self.client.clone(), &url).await?;
+        let html = get_url_content(self.inner.client.clone(), &url).await?;
         let document = Html::parse_document(&html);
         let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
@@ -209,18 +225,16 @@ impl Parser for DiLi360Parser {
                 let url = href.unwrap().to_string();
                 let name = texts.join("");
                 Some(Album {
-                    client: self.client.clone(),
                     name,
-                    url,
-                    parser: Arc::new(self.clone())
+                    url
                 })
             }
         }).collect();
 
-        let page_count = if self.page_count == 0 {
+        let page_count = if self.inner.page_count == 0 {
             self.parse_page_count(&document)?
         } else {
-            self.page_count
+            self.inner.page_count
         };
 
         Ok((albums, page_count))
@@ -231,7 +245,7 @@ impl Parser for DiLi360Parser {
     }
 
     async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
-        let html = get_url_content(self.client.clone(), &url).await?;
+        let html = get_url_content(self.inner.client.clone(), &url).await?;
         let document = Html::parse_document(&html);
         let selector = Selector::parse(".imgbox>.img>img").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
@@ -267,9 +281,7 @@ impl Parser for DiLi360Parser {
 
 #[derive(Clone)]
 struct MZTParser {
-    client: Client,
-    page: u32,
-    page_count: u32
+    inner: InnerParser
 }
 
 impl MZTParser {
@@ -280,9 +292,7 @@ impl MZTParser {
 
     fn new() -> Self {
         Self {
-            client: Client::new(),
-            page: 0,
-            page_count: 0
+            inner: InnerParser::new()
         }
     }
 }
@@ -292,6 +302,10 @@ impl Parser for MZTParser {
 
     fn parser_name(&self) -> String {
         MZTParser::PARSER_NAME.to_string()
+    }
+
+    fn client(&self) -> Arc<&Client> {
+        Arc::new(&self.inner.client)
     }
 
     fn parse_page_count(&self, document: &Html) -> Result<u32> {
@@ -320,6 +334,7 @@ impl Parser for MZTParser {
 }
 
 pub struct AlbumSearcher {
+    client: Client,
     parser: Arc<dyn Parser>,
     page: u32,
     page_count: u32,
@@ -339,6 +354,7 @@ impl AlbumSearcher {
         }
 
         Self {
+            client: Client::new(),
             parser,
             page: 0,
             page_count: 0,
@@ -439,8 +455,9 @@ impl AlbumSearcher {
             let album = &albums[index];
             info!("download searcher {} page {} index album, album: {}", self.page, idx, album.name);
             let parser = self.parser.clone();
+            let client = parser.client();
             let a = Arc::new(album.clone());
-            a.download_pictures(parser.clone(), "./albums/").await
+            a.download_pictures(*client, parser.clone(), "./albums/").await
         } else {
             Err(anyhow!("current page no data"))
         }
