@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Output;
@@ -11,6 +12,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use lru::LruCache;
 use reqwest::Client;
 use scraper::{ElementRef, Html, Selector};
 use tokio::fs::File;
@@ -323,7 +325,7 @@ pub struct AlbumSearcher {
     page_count: u32,
     size: u32,
     keyword: String,
-    albums: HashMap<String, Vec<Album>>
+    albums: LruCache<String, Vec<Album>>
 }
 
 impl AlbumSearcher {
@@ -342,13 +344,13 @@ impl AlbumSearcher {
             page_count: 0,
             size,
             keyword: keyword.to_string(),
-            albums: HashMap::new()
+            albums: LruCache::new(NonZeroUsize::new(64).unwrap())
         }
     }
 
     async fn get_albums(&mut self) -> AlbumResult {
         let key = format!("page-{}", &self.page);
-        if self.albums.contains_key(&key) {
+        if self.albums.contains(&key) {
             Ok(self.albums.get(&key))
         } else {
             // 获取新数据
@@ -360,7 +362,7 @@ impl AlbumSearcher {
                 self.page_count = page_count;
             }
 
-            self.albums.insert(key.clone(), albums);
+            self.albums.push(key.clone(), albums);
             Ok(self.albums.get(&key))
         }
     }
