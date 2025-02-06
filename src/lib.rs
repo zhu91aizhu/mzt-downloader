@@ -145,7 +145,7 @@ pub trait Parser: Send + Sync {
 
 #[derive(Clone)]
 struct DiLi360Parser {
-    client: Box<Client>,
+    client: Client,
     page: u32,
     page_count: u32
 }
@@ -158,7 +158,7 @@ impl DiLi360Parser {
 
     fn new() -> Self {
         Self {
-            client: Box::new(Client::new()),
+            client: Client::new(),
             page: 0,
             page_count: 0
         }
@@ -184,7 +184,7 @@ impl Parser for DiLi360Parser {
     async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
         // 地理 360 搜索结果页面从 0 开始
         let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", &keyword, page - 1);
-        let html = get_url_content(*self.client.clone(), &url).await?;
+        let html = get_url_content(self.client.clone(), &url).await?;
         let document = Html::parse_document(&html);
         let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
@@ -201,7 +201,7 @@ impl Parser for DiLi360Parser {
                 let url = href.unwrap().to_string();
                 let name = texts.join("");
                 Some(Album {
-                    client: *self.client.clone(),
+                    client: self.client.clone(),
                     name,
                     url,
                     parser: Arc::new(self.clone())
@@ -223,7 +223,7 @@ impl Parser for DiLi360Parser {
     }
 
     async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
-        let html = get_url_content(*self.client.clone(), &url).await?;
+        let html = get_url_content(self.client.clone(), &url).await?;
         let document = Html::parse_document(&html);
         let selector = Selector::parse(".imgbox>.img>img").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
@@ -259,7 +259,7 @@ impl Parser for DiLi360Parser {
 
 #[derive(Clone)]
 struct MZTParser {
-    client: Box<Client>,
+    client: Client,
     page: u32,
     page_count: u32
 }
@@ -272,7 +272,7 @@ impl MZTParser {
 
     fn new() -> Self {
         Self {
-            client: Box::new(Client::new()),
+            client: Client::new(),
             page: 0,
             page_count: 0
         }
