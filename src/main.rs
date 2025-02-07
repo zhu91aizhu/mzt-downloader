@@ -117,7 +117,8 @@ fn print_commands() {
     println!("search [keyword](s [keyword]): search albums with keyword");
 }
 
-async fn get_albums(searcher: &mut Option<AlbumSearcher>, command: Command) {
+async fn get_albums(searcher: &mut Option<AlbumSearcher>,
+                    prompt_context: &mut PromptContext, command: Command) {
     match searcher {
         Some(ref mut searcher) => {
             let ret = match &command {
@@ -130,7 +131,11 @@ async fn get_albums(searcher: &mut Option<AlbumSearcher>, command: Command) {
             };
 
             match ret {
-                Ok(albums) => print_albums(albums),
+                Ok(albums) => {
+                    print_albums(albums);
+                    prompt_context.current = Some(searcher.page());
+                    prompt_context.total_page = Some(searcher.page_count());
+                },
                 Err(err) => {
                     error!("get albums error: {:?}", err);
                     println!("获取专辑失败，详情请查看日志");
@@ -140,6 +145,36 @@ async fn get_albums(searcher: &mut Option<AlbumSearcher>, command: Command) {
         None => {
             error!("searcher is init");
             println!("请先搜索专辑");
+        }
+    }
+}
+
+struct PromptContext {
+    keyword: Option<String>,
+    current: Option<u32>,
+    total_page: Option<u32>,
+    parser: String
+}
+
+impl PromptContext {
+    fn prompt(&self) -> String {
+        match &self.keyword {
+            Some(keyword) => {
+                format!("[{} <{}> ({}/{})] -> ",
+                        self.parser, keyword, self.current.unwrap(), self.total_page.unwrap())
+            }
+            None => {
+                format!("[{}] -> ", self.parser)
+            }
+        }
+    }
+
+    fn new(parser: String) -> Self {
+        Self {
+            keyword: None,
+            current: None,
+            total_page: None,
+            parser
         }
     }
 }
@@ -159,9 +194,10 @@ async fn main() {
     let mut searcher_opt = None;
     let mut searcher = &mut searcher_opt;
     let mut parser = parser::default_parser();
+    let mut prompt_context = PromptContext::new(parser.parser_name());
 
     loop {
-        print!("-> ");
+        print!("{}", prompt_context.prompt());
         let _ = std::io::stdout().flush();
 
         let mut line = String::new();
@@ -181,6 +217,7 @@ async fn main() {
                         match parser::parse(&parser_code) {
                             Ok(new_parser) => {
                                 parser = new_parser;
+                                prompt_context = PromptContext::new(parser.parser_name());
                                 println!("切换到解析器成功");
                                 info!("switch to {} parser successful", parser_code);
                             }
@@ -193,22 +230,23 @@ async fn main() {
                     Command::SEARCH(keyword) => {
                         info!("search {}", &keyword);
                         *searcher = Some(AlbumSearcher::new(parser.clone(), &keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
-                        get_albums(&mut searcher, Command::NEXT).await;
+                        prompt_context.keyword = Some(keyword);
+                        get_albums(&mut searcher, &mut prompt_context, Command::NEXT).await;
                     }
                     Command::CURRENT => {
-                        get_albums(&mut searcher, Command::CURRENT).await;
+                        get_albums(&mut searcher, &mut prompt_context, Command::CURRENT).await;
                     }
                     Command::FIRST => {
-                        get_albums(&mut searcher, Command::FIRST).await;
+                        get_albums(&mut searcher, &mut prompt_context, Command::FIRST).await;
                     }
                     Command::LAST => {
-                        get_albums(&mut searcher, Command::LAST).await;
+                        get_albums(&mut searcher, &mut prompt_context, Command::LAST).await;
                     }
                     Command::PREV => {
-                        get_albums(&mut searcher, Command::PREV).await;
+                        get_albums(&mut searcher, &mut prompt_context, Command::PREV).await;
                     }
                     Command::NEXT => {
-                        get_albums(&mut searcher, Command::NEXT).await;
+                        get_albums(&mut searcher, &mut prompt_context, Command::NEXT).await;
                     }
                     Command::DOWNLOAD(idx) => {
                         match &mut searcher {

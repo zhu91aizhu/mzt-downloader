@@ -197,12 +197,26 @@ impl Parser for DiLi360Parser {
     }
 
     fn parse_page_count(&self, document: &Html) -> Result<u32> {
-        let selector = Selector::parse("#pageFooter>a").map_err(|err| {
+        let selector = Selector::parse("#pageFooter .pager-normal-foot").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
         })?;
 
-        let element: Vec<ElementRef> = document.select(&selector).into_iter().collect();
-        Ok(element.len() as u32)
+        let last_element = document.select(&selector).last();
+        if last_element.is_none() {
+            return Err(anyhow!("parse page count error: not found page element"));
+        }
+
+        let element = last_element.unwrap();
+        let text = element.text().next();
+        if text.is_none() {
+            return Err(anyhow!("parse page count error: not found page text"));
+        }
+
+        let text = text.unwrap();
+        let page_count = text.parse::<u32>().map_err(|e| {
+            anyhow!("parse page count error: {e:?}")
+        })?;
+        Ok(page_count)
     }
 
     async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
@@ -364,6 +378,14 @@ impl AlbumSearcher {
             keyword: keyword.to_string(),
             albums: LruCache::new(NonZeroUsize::new(64).unwrap())
         }
+    }
+
+    pub fn page(&self) -> u32 {
+        self.page
+    }
+
+    pub fn page_count(&self) -> u32 {
+        self.page_count
     }
 
     async fn get_albums(&mut self) -> AlbumResult {
