@@ -455,6 +455,27 @@ impl AlbumSearcher {
         self.get_albums().await
     }
 
+    pub async fn jump(&mut self, page: &u32) -> AlbumResult {
+        let page = *page;
+        self.page = if page < 1 {
+            1
+        } else {
+            if self.page_count == 0 {
+                // 解析第一页内容，并获取分页总数
+                self.next().await?;
+            }
+
+           if self.page_count < page {
+                self.page_count
+            }
+            else {
+                page
+            }
+        };
+
+        self.get_albums().await
+    }
+
     pub async fn download(&mut self, idx: usize) -> Result<()> {
         if self.page_count == 0 {
             return Err(anyhow!("no data"));

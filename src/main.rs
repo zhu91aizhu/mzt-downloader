@@ -14,7 +14,7 @@ use gqwht_download::{Album, AlbumSearcher, parser};
 #[derive(Debug)]
 enum Command {
     HELP, CURRENT, FIRST, LAST, NEXT, PREV, QUIT, UNKNOWN, NONE,
-    SWITCH(String), SEARCH(String), DOWNLOAD(usize), ArgumentErr(String)
+    SWITCH(String), SEARCH(String), JUMP(u32), DOWNLOAD(usize), ArgumentErr(String)
 }
 
 impl FromStr for Command {
@@ -43,6 +43,23 @@ impl FromStr for Command {
                 }
                 "PREV" | "P" => {
                     Self::PREV
+                }
+                "JUMP" | "J" => {
+                    match cmd_line.next() {
+                        Some(idx) => {
+                            match u32::from_str(idx) {
+                                Ok(idx) => {
+                                    Command::JUMP(idx)
+                                }
+                                Err(_) => {
+                                    Self::ArgumentErr("参数必须为数字".to_string())
+                                }
+                            }
+                        }
+                        None => {
+                            Self::ArgumentErr("缺少页码参数".to_string())
+                        }
+                    }
                 }
                 "QUIT" | "Q" => {
                     Self::QUIT
@@ -127,6 +144,7 @@ async fn get_albums(searcher: &mut Option<AlbumSearcher>,
                 Command::LAST => searcher.last().await,
                 Command::PREV => searcher.prev().await,
                 Command::NEXT => searcher.next().await,
+                Command::JUMP(page) => searcher.jump(page).await,
                 _ => Err(anyhow!("not support command: {:?}", &command))
             };
 
@@ -247,6 +265,9 @@ async fn main() {
                     }
                     Command::NEXT => {
                         get_albums(&mut searcher, &mut prompt_context, Command::NEXT).await;
+                    }
+                    Command::JUMP(page) => {
+                        get_albums(&mut searcher, &mut prompt_context, Command::JUMP(page)).await;
                     }
                     Command::DOWNLOAD(idx) => {
                         match &mut searcher {
