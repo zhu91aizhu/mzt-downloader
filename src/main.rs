@@ -193,6 +193,7 @@ async fn main() {
                     Command::SEARCH(keyword) => {
                         info!("search {}", &keyword);
                         *searcher = Some(AlbumSearcher::new(parser.clone(), &keyword, AlbumSearcher::DEFAULT_PAGE_SIZE));
+                        get_albums(&mut searcher, Command::NEXT).await;
                     }
                     Command::CURRENT => {
                         get_albums(&mut searcher, Command::CURRENT).await;
