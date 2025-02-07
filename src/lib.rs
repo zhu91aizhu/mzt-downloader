@@ -270,7 +270,9 @@ impl Parser for DiLi360Parser {
         let path = Path::new(url);
         if let Some(file_name) = path.file_name() {
             file_name.to_str().map(|s| {
-                s.to_string()
+                let mut names = s.split("@");
+                let name = names.next();
+                name.unwrap().to_string()
             }).ok_or(anyhow!("get file name error: {url}"))
         } else {
             Err(anyhow!("get file name error: {url}"))
