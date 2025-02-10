@@ -19,6 +19,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tracing::{error, info};
+use pinyin::ToPinyin;
 
 use crate::util::filenamify;
 
@@ -110,15 +111,15 @@ pub mod parser {
 
     use anyhow::{anyhow, Result};
 
-    use crate::{DiLi360Parser, MZTParser, Parser};
+    use crate::{DiLi360Parser, SFTKParser, Parser};
 
     pub fn parse(parser_code: &str) -> Result<Arc<dyn Parser>> {
         match parser_code.to_uppercase().as_str() {
             DiLi360Parser::PARSER_CODE => {
                 Ok(Arc::new(DiLi360Parser::new()))
             }
-            MZTParser::PARSER_CODE => {
-                Ok(Arc::new(MZTParser::new()))
+            SFTKParser::PARSER_CODE => {
+                Ok(Arc::new(SFTKParser::new()))
             }
             _ => Err(anyhow!("不支持的解析器: {}", parser_code))
         }
@@ -143,6 +144,23 @@ impl InnerParser {
             page: 0,
             page_count: 0
         }
+    }
+
+    async fn get_page_pictures(&self, url: String, selector: &str) -> Result<Vec<String>> {
+        let html = get_url_content(self.client.clone(), &url).await?;
+        let document = Html::parse_document(&html);
+        let selector = Selector::parse(selector).map_err(|err| {
+            anyhow!("parse page pictures selector error: {err:?}")
+        })?;
+
+        let pictures: Vec<String> = document.select(&selector).into_iter().filter_map(|element| {
+            if let Some(url) = element.value().attr("src") {
+                Some(url.to_string())
+            } else {
+                None
+            }
+        }).collect();
+        Ok(pictures)
     }
 }
 
@@ -259,20 +277,7 @@ impl Parser for DiLi360Parser {
     }
 
     async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
-        let html = get_url_content(self.inner.client.clone(), &url).await?;
-        let document = Html::parse_document(&html);
-        let selector = Selector::parse(".imgbox>.img>img").map_err(|err| {
-            anyhow!("parse selector error: {err:?}")
-        })?;
-
-        let pictures: Vec<String> = document.select(&selector).into_iter().filter_map(|element| {
-            if let Some(url) = element.value().attr("src") {
-                Some(url.to_string())
-            } else {
-                None
-            }
-        }).collect();
-        Ok(pictures)
+        self.inner.get_page_pictures(url, ".imgbox>.img>img").await
     }
 
     async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
@@ -296,28 +301,39 @@ impl Parser for DiLi360Parser {
 }
 
 #[derive(Clone)]
-struct MZTParser {
+struct SFTKParser {
     inner: InnerParser
 }
 
-impl MZTParser {
+impl SFTKParser {
 
-    const PARSER_CODE: &'static str = "MZT";
+    const PARSER_CODE: &'static str = "SFTK";
 
-    const PARSER_NAME: &'static str = "妹子图";
+    const PARSER_NAME: &'static str = "私房图库";
+
+    const BASE_URL: &'static str = "https://zhannei.baidu.com";
 
     fn new() -> Self {
         Self {
             inner: InnerParser::new()
         }
     }
+
+    fn keyword_to_pinyin(keyword: &str) -> String {
+        let pinyin: String = keyword.chars()
+            .map(|c| c.to_pinyin().map(|p| p.plain().to_string()).unwrap_or(c.to_string()))
+            .collect::<Vec<String>>()
+            .join("");
+        pinyin
+    }
+
 }
 
 #[async_trait]
-impl Parser for MZTParser {
+impl Parser for SFTKParser {
 
     fn parser_name(&self) -> String {
-        MZTParser::PARSER_NAME.to_string()
+        SFTKParser::PARSER_NAME.to_string()
     }
 
     fn client(&self) -> Arc<&Client> {
@@ -325,32 +341,93 @@ impl Parser for MZTParser {
     }
 
     fn parse_page_count(&self, document: &Html) -> Result<u32> {
-        todo!()
+        let selector = Selector::parse(".pagelist>select>option").map_err(|err| {
+            anyhow!("parse selector error: {err:?}")
+        })?;
+
+        let elements: Vec<ElementRef> = document.select(&selector).into_iter().collect();
+        Ok(elements.len() as u32)
     }
 
     async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
-        todo!()
+        let pinyin = Self::keyword_to_pinyin(&keyword);
+        let url = format!("https://zhannei.baidu.com/chis/{}/{}.html", &pinyin, page);
+        let html = get_url_content(self.inner.client.clone(), &url).await?;
+        let document = Html::parse_document(&html);
+        let selector = Selector::parse("#list>ul>div>.title>a").map_err(|err| {
+            anyhow!("parse selector error: {err:?}")
+        })?;
+
+        let albums = document.select(&selector).into_iter().map(|element| {
+            let href = element.value().attr("href");
+            let texts = element.text().collect::<Vec<_>>();
+            (href, texts)
+        }).filter_map(|(href, texts)| {
+            if href.is_none() || texts.is_empty() {
+                None
+            } else {
+                let url = format!("{}{}", Self::BASE_URL, href.unwrap());
+                let name = texts.join("");
+                Some(Album {
+                    name,
+                    url
+                })
+            }
+        }).collect();
+
+        let page_count = if self.inner.page_count == 0 {
+            self.parse_page_count(&document)?
+        } else {
+            self.inner.page_count
+        };
+
+        Ok((albums, page_count))
     }
 
     fn get_pagination(&self, html: &str) -> usize {
-        todo!()
+        let ret = Selector::parse(".pagelist>a");
+        if ret.is_err() {
+            error!("parse selector error: {:?}", ret.err());
+            return 0;
+        }
+
+        let selector = ret.unwrap();
+        let document = Html::parse_document(&html);
+        let elements: Vec<ElementRef> = document.select(&selector).into_iter().collect();
+        elements.len() + 1
     }
 
     async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
-        todo!()
+        self.inner.get_page_pictures(url, "#picg>.slide>a>img").await
     }
 
     async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
-        todo!()
+        let html = get_url_content(self.inner.client.clone(), &url).await?;
+        let page_count = self.get_pagination(&html);
+        let mut all_pictures = vec![];
+        let base_url = &url[0..url.len() - 5];
+        for i in 1..=page_count {
+            let page_url = format!("{}_{}.html", base_url, i);
+            let mut pictures = self.get_page_pictures(page_url).await?;
+            all_pictures.append(&mut pictures);
+        }
+
+        Ok(all_pictures)
     }
 
     fn get_picture_name(&self, url: &str) -> Result<String> {
-        todo!()
+        let path = Path::new(url);
+        if let Some(file_name) = path.file_name() {
+            file_name.to_str().map(|s| {
+                s.to_string()
+            }).ok_or(anyhow!("get file name error: {url}"))
+        } else {
+            Err(anyhow!("get file name error: {url}"))
+        }
     }
 }
 
 pub struct AlbumSearcher {
-    client: Client,
     parser: Arc<dyn Parser>,
     page: u32,
     page_count: u32,
@@ -370,7 +447,6 @@ impl AlbumSearcher {
         }
 
         Self {
-            client: Client::new(),
             parser,
             page: 0,
             page_count: 0,
@@ -565,6 +641,17 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn test_keyword_to_pinyin() {
+        let keyword = "左公子";
+        let pinyin = SFTKParser::keyword_to_pinyin(keyword);
+        assert_eq!(pinyin, "zuogongzi".to_string());
+
+        let keyword = "左公子11";
+        let pinyin = SFTKParser::keyword_to_pinyin(keyword);
+        assert_eq!(pinyin, "zuogongzi11".to_string());
     }
 
 }
