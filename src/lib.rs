@@ -13,21 +13,44 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use lru::LruCache;
-use reqwest::Client;
+use reqwest::{Client, header};
 use scraper::{ElementRef, Html, Selector};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tracing::{error, info};
 use pinyin::ToPinyin;
-
+use reqwest::header::{HeaderMap, HeaderValue};
 use crate::util::filenamify;
 
-async fn get_url_content(client: Client, url: &str) -> Result<String> {
-    let response = client.get(url).send().await?;
+async fn get_url_content(client: Client, url: &str, encoding: Option<String>, headers: Option<HeaderMap>) -> Result<String> {
+    let mut default_headers = HeaderMap::new();
+    default_headers.insert(header::USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"));
+    default_headers.insert(header::ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"));
+    default_headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    default_headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
+    default_headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
+    default_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("max-age=0"));
+
+    let mut request = client.get(url);
+    if let Some(headers) = headers {
+        for (n, v) in headers {
+            if let Some(name) = n {
+                default_headers.insert(name, v);
+            }
+        }
+        request = request.headers(default_headers);
+    }
+
+    let response = request.send().await?;
     let response = response.error_for_status()?;
-    let content = response.text().await?;
-    Ok(content.to_string())
+
+    let content = match encoding {
+        Some(encode) => response.text_with_charset(&encode).await?,
+        None => response.text().await?
+    };
+
+    Ok(content)
 }
 
 #[derive(Clone)]
@@ -154,8 +177,8 @@ impl InnerParser {
         }
     }
 
-    async fn get_page_pictures(&self, url: String, selector: &str) -> Result<Vec<String>> {
-        let html = get_url_content(self.client.clone(), &url).await?;
+    async fn get_page_pictures(&self, url: String, selector: &str, encoding: Option<String>, headers: Option<HeaderMap>) -> Result<Vec<String>> {
+        let html = get_url_content(self.client.clone(), &url, encoding, headers).await?;
         let document = Html::parse_document(&html);
         let selector = Selector::parse(selector).map_err(|err| {
             anyhow!("parse page pictures selector error: {err:?}")
@@ -248,7 +271,7 @@ impl Parser for DiLi360Parser {
     async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
         // 地理 360 搜索结果页面从 0 开始
         let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", &keyword, page - 1);
-        let html = get_url_content(self.inner.client.clone(), &url).await?;
+        let html = get_url_content(self.inner.client.clone(), &url, None, None).await?;
         let document = Html::parse_document(&html);
         let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
@@ -285,7 +308,7 @@ impl Parser for DiLi360Parser {
     }
 
     async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
-        self.inner.get_page_pictures(url, ".imgbox>.img>img").await
+        self.inner.get_page_pictures(url, ".imgbox>.img>img", None, None).await
     }
 
     async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
@@ -319,7 +342,7 @@ impl SFTKParser {
 
     const PARSER_NAME: &'static str = "私房图库";
 
-    const BASE_URL: &'static str = "https://zhannei.baidu.com";
+    const BASE_URL: &'static str = "http://www.sftuku.com";
 
     fn new() -> Self {
         Self {
@@ -335,6 +358,12 @@ impl SFTKParser {
         pinyin
     }
 
+    fn default_headers() -> HeaderMap {
+        let mut default_headers = HeaderMap::new();
+        default_headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN,zh-Hans;q=0.9"));
+        default_headers.insert(header::HOST, HeaderValue::from_static("www.sftuku.com"));
+        default_headers
+    }
 }
 
 #[async_trait]
@@ -349,7 +378,7 @@ impl Parser for SFTKParser {
     }
 
     fn parse_page_count(&self, document: &Html) -> Result<u32> {
-        let selector = Selector::parse(".pagelist>select>option").map_err(|err| {
+        let selector = Selector::parse(".pagelist").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
         })?;
 
@@ -359,8 +388,9 @@ impl Parser for SFTKParser {
 
     async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
         let pinyin = Self::keyword_to_pinyin(&keyword);
-        let url = format!("https://zhannei.baidu.com/chis/{}/{}.html", &pinyin, page);
-        let html = get_url_content(self.inner.client.clone(), &url).await?;
+        let url = format!("http://www.sftuku.com/chis/{}/{}.html", &pinyin, page);
+        let html = get_url_content(self.inner.client.clone(), &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
+        println!("html: {}", html);
         let document = Html::parse_document(&html);
         let selector = Selector::parse("#list>ul>div>.title>a").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
@@ -406,11 +436,11 @@ impl Parser for SFTKParser {
     }
 
     async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
-        self.inner.get_page_pictures(url, "#picg>.slide>a>img").await
+        self.inner.get_page_pictures(url, "#picg>.slide>a>img", Some("GBK".to_string()), Some(Self::default_headers())).await
     }
 
     async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
-        let html = get_url_content(self.inner.client.clone(), &url).await?;
+        let html = get_url_content(self.inner.client.clone(), &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
         let page_count = self.get_pagination(&html);
         let mut all_pictures = vec![];
         let base_url = &url[0..url.len() - 5];
