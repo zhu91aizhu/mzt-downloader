@@ -14,7 +14,7 @@ use gqwht_download::{Album, AlbumSearcher, parser};
 #[derive(Debug)]
 enum Command {
     HELP, CURRENT, FIRST, LAST, NEXT, PREV, QUIT, UNKNOWN, NONE,
-    SWITCH(String), SEARCH(String), JUMP(u32), DOWNLOAD(usize), ArgumentErr(String)
+    SWITCH(Option<String>), SEARCH(String), JUMP(u32), DOWNLOAD(usize), ArgumentErr(String)
 }
 
 impl FromStr for Command {
@@ -82,14 +82,7 @@ impl FromStr for Command {
                     }
                 }
                 "SWITCH" | "T" => {
-                    match cmd_line.next() {
-                        Some(parser) => {
-                            Self::SWITCH(parser.to_string())
-                        }
-                        None => {
-                            Self::ArgumentErr("缺少解析器参数".to_string())
-                        }
-                    }
+                    Self::SWITCH(cmd_line.next().map(|argument|argument.to_string()))
                 }
                 "SEARCH" | "S" => {
                     match cmd_line.next() {
@@ -232,16 +225,26 @@ async fn main() {
                         print_commands();
                     }
                     Command::SWITCH(parser_code) => {
-                        match parser::parse(&parser_code) {
-                            Ok(new_parser) => {
-                                parser = new_parser;
-                                prompt_context = PromptContext::new(parser.parser_name());
-                                println!("切换到解析器成功");
-                                info!("switch to {} parser successful", parser_code);
+                        match parser_code {
+                            Some(code) => {
+                                match parser::parse(&code) {
+                                    Ok(new_parser) => {
+                                        parser = new_parser;
+                                        prompt_context = PromptContext::new(parser.parser_name());
+                                        println!("切换到解析器成功");
+                                        info!("switch to {} parser successful", code);
+                                    }
+                                    Err(err) => {
+                                        error!("switch parser error: {:?}", err);
+                                        println!("切换解析器失败，详情请查看日志");
+                                    }
+                                }
                             }
-                            Err(err) => {
-                                error!("switch parser error: {:?}", err);
-                                println!("切换解析器失败，详情请查看日志");
+                            None => {
+                                let parsers = parser::parsers();
+                                for (i, parser) in parsers.iter().enumerate() {
+                                    println!("{}. {}({})", i, parser.1, parser.0);
+                                }
                             }
                         }
                     }

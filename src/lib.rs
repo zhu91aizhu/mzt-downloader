@@ -128,6 +128,14 @@ pub mod parser {
     pub fn default_parser() -> Arc<dyn Parser> {
         Arc::new(DiLi360Parser::new())
     }
+
+    pub fn parsers() -> Vec<(String, String)> {
+        let mut parsers = vec![];
+        parsers.push((DiLi360Parser::PARSER_CODE.to_string(), DiLi360Parser::PARSER_NAME.to_string()));
+        parsers.push((SFTKParser::PARSER_CODE.to_string(), SFTKParser::PARSER_NAME.to_string()));
+        parsers
+    }
+
 }
 
 #[derive(Clone)]
