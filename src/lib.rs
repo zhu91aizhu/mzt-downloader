@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use encoding::all::GBK;
+use encoding::{DecoderTrap, Encoding};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use lru::LruCache;
 use reqwest::{Client, header};
@@ -23,7 +25,7 @@ use pinyin::ToPinyin;
 use reqwest::header::{HeaderMap, HeaderValue};
 use crate::util::filenamify;
 
-async fn get_url_content(client: Client, url: &str, encoding: Option<String>, headers: Option<HeaderMap>) -> Result<String> {
+fn default_headers() -> HeaderMap {
     let mut default_headers = HeaderMap::new();
     default_headers.insert(header::USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"));
     default_headers.insert(header::ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"));
@@ -31,6 +33,12 @@ async fn get_url_content(client: Client, url: &str, encoding: Option<String>, he
     default_headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
     default_headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
     default_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("max-age=0"));
+
+    default_headers
+}
+
+async fn get_url_content(client: Client, url: &str, encoding: Option<String>, headers: Option<HeaderMap>) -> Result<String> {
+    let mut default_headers = default_headers();
 
     let mut request = client.get(url);
     if let Some(headers) = headers {
@@ -46,7 +54,14 @@ async fn get_url_content(client: Client, url: &str, encoding: Option<String>, he
     let response = response.error_for_status()?;
 
     let content = match encoding {
-        Some(encode) => response.text_with_charset(&encode).await?,
+        Some(encode) => {
+            let bytes = response.bytes().await?;
+            let bs = bytes.iter().as_slice();
+            let decoded_text = GBK
+                .decode(&bytes, DecoderTrap::Replace)
+                .unwrap_or_else(|_| "解码失败".into());
+            decoded_text
+        },
         None => response.text().await?
     };
 
@@ -62,7 +77,7 @@ pub struct Album {
 impl Album {
 
     async fn download_picture(&self, client: &Client, parser: &dyn Parser, url: &str, save_to_path: PathBuf) -> Result<()> {
-        let response = client.get(url).send().await.map_err(|e| {
+        let response = client.get(url).headers(default_headers()).send().await.map_err(|e| {
             anyhow!("Failed to send request for {}: {}", url, e)
         })?;
 
@@ -378,21 +393,20 @@ impl Parser for SFTKParser {
     }
 
     fn parse_page_count(&self, document: &Html) -> Result<u32> {
-        let selector = Selector::parse(".pagelist").map_err(|err| {
+        let selector = Selector::parse(".pagelist>p>select>option").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
         })?;
 
         let elements: Vec<ElementRef> = document.select(&selector).into_iter().collect();
-        Ok(elements.len() as u32)
+        Ok((elements.len() / 2) as u32)
     }
 
     async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
         let pinyin = Self::keyword_to_pinyin(&keyword);
         let url = format!("http://www.sftuku.com/chis/{}/{}.html", &pinyin, page);
         let html = get_url_content(self.inner.client.clone(), &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
-        println!("html: {}", html);
         let document = Html::parse_document(&html);
-        let selector = Selector::parse("#list>ul>div>.title>a").map_err(|err| {
+        let selector = Selector::parse("#list>ul>li>.Title>a").map_err(|err| {
             anyhow!("parse selector error: {err:?}")
         })?;
 
@@ -432,7 +446,7 @@ impl Parser for SFTKParser {
         let selector = ret.unwrap();
         let document = Html::parse_document(&html);
         let elements: Vec<ElementRef> = document.select(&selector).into_iter().collect();
-        elements.len() + 1
+        elements.len()
     }
 
     async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
