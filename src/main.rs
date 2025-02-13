@@ -4,11 +4,11 @@ use std::str::FromStr;
 use anyhow::anyhow;
 use tokio::fs::create_dir_all;
 use tracing::{error, info};
-use tracing_appender::non_blocking;
 use tracing_appender::non_blocking::NonBlocking;
-use tracing_subscriber::fmt::layer;
 use tracing_subscriber::{Layer, registry};
+use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
+
 use gqwht_download::{Album, AlbumSearcher, parser};
 
 #[derive(Debug)]

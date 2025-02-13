@@ -1,28 +1,21 @@
-use std::collections::HashMap;
 use std::fmt::Write;
-use std::future::Future;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::process::Output;
-use std::str::FromStr;
 use std::string::ToString;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use encoding::all::GBK;
-use encoding::{DecoderTrap, Encoding};
+use encoding::DecoderTrap;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use lru::LruCache;
 use reqwest::{Client, header};
-use scraper::{ElementRef, Html, Selector};
+use reqwest::header::{HeaderMap, HeaderValue};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tracing::{error, info};
-use pinyin::ToPinyin;
-use reqwest::header::{HeaderMap, HeaderValue};
+
+use crate::parser::Parser;
 use crate::util::filenamify;
 
 fn default_headers() -> HeaderMap {
@@ -37,29 +30,34 @@ fn default_headers() -> HeaderMap {
     default_headers
 }
 
-async fn get_url_content(client: Client, url: &str, encoding: Option<String>, headers: Option<HeaderMap>) -> Result<String> {
+async fn get_url_content(client: &Client, url: &str, encoding: Option<String>, headers: Option<HeaderMap>) -> Result<String> {
     let mut default_headers = default_headers();
-
-    let mut request = client.get(url);
     if let Some(headers) = headers {
         for (n, v) in headers {
             if let Some(name) = n {
                 default_headers.insert(name, v);
             }
         }
-        request = request.headers(default_headers);
     }
 
-    let response = request.send().await?;
+    let response = client.get(url).headers(default_headers).send().await?;
     let response = response.error_for_status()?;
 
     let content = match encoding {
         Some(encode) => {
             let bytes = response.bytes().await?;
-            let bs = bytes.iter().as_slice();
-            let decoded_text = GBK
-                .decode(&bytes, DecoderTrap::Replace)
-                .unwrap_or_else(|_| "解码失败".into());
+            let decoded_text = match encoding::label::encoding_from_whatwg_label(&encode) {
+                Some(encoder) => {
+                    encoder
+                        .decode(&bytes, DecoderTrap::Replace)
+                        .map_err(|e| {
+                            anyhow!("响应数据解码错误: {:?}", e)
+                        })
+                }
+                None => {
+                    Err(anyhow!("未识别的字符集编码: {}", encode))
+                }
+            }?;
             decoded_text
         },
         None => response.text().await?
@@ -145,11 +143,326 @@ impl Album {
 pub type AlbumResult<'a> = Result<Option<&'a Vec<Album>>>;
 
 pub mod parser {
+    use std::path::Path;
     use std::sync::Arc;
 
     use anyhow::{anyhow, Result};
+    use async_trait::async_trait;
+    use pinyin::ToPinyin;
+    use reqwest::{Client, header};
+    use reqwest::header::{HeaderMap, HeaderValue};
+    use scraper::{ElementRef, Html, Selector};
+    use tracing::error;
 
-    use crate::{DiLi360Parser, SFTKParser, Parser};
+    use crate::{Album, get_url_content};
+
+    #[derive(Clone)]
+    struct InnerParser {
+        client: Client,
+        page: u32,
+        page_count: u32
+    }
+
+    impl InnerParser {
+        fn new() -> Self {
+            Self {
+                client: Client::new(),
+                page: 0,
+                page_count: 0
+            }
+        }
+
+        async fn get_page_pictures(&self, url: String, selector: &str, encoding: Option<String>, headers: Option<HeaderMap>) -> Result<Vec<String>> {
+            let html = get_url_content(&self.client, &url, encoding, headers).await?;
+            let document = Html::parse_document(&html);
+            let selector = Selector::parse(selector).map_err(|err| {
+                anyhow!("parse page pictures selector error: {err:?}")
+            })?;
+
+            let pictures: Vec<String> = document.select(&selector).into_iter().filter_map(|element| {
+                if let Some(url) = element.value().attr("src") {
+                    Some(url.to_string())
+                } else {
+                    None
+                }
+            }).collect();
+            Ok(pictures)
+        }
+    }
+
+    #[async_trait]
+    pub trait Parser: Send + Sync {
+
+        fn parser_name(&self) -> String;
+
+        fn client(&self) -> Arc<&Client>;
+
+        fn parse_page_count(&self, document: &Html) -> Result<u32>;
+
+        async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)>;
+
+        fn get_pagination(&self, html: &str) -> usize;
+
+        async fn get_page_pictures(&self, url: String) -> Result<Vec<String>>;
+
+        async fn get_all_pictures(&self, url: String) -> Result<Vec<String>>;
+
+        fn get_picture_name(&self, url: &str) -> Result<String>;
+
+    }
+
+    #[derive(Clone)]
+    struct DiLi360Parser {
+        inner: InnerParser
+    }
+
+    impl DiLi360Parser {
+
+        const PARSER_CODE: &'static str = "DILI360";
+
+        const PARSER_NAME: &'static str = "中国地理";
+
+        fn new() -> Self {
+            Self {
+                inner: InnerParser::new()
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Parser for DiLi360Parser {
+
+        fn parser_name(&self) -> String {
+            DiLi360Parser::PARSER_NAME.to_string()
+        }
+
+        fn client(&self) -> Arc<&Client> {
+            Arc::new(&self.inner.client)
+        }
+
+        fn parse_page_count(&self, document: &Html) -> Result<u32> {
+            let selector = Selector::parse("#pageFooter .pager-normal-foot").map_err(|err| {
+                anyhow!("parse selector error: {err:?}")
+            })?;
+
+            let last_element = document.select(&selector).last();
+            if last_element.is_none() {
+                return Err(anyhow!("parse page count error: not found page element"));
+            }
+
+            let element = last_element.unwrap();
+            let text = element.text().next();
+            if text.is_none() {
+                return Err(anyhow!("parse page count error: not found page text"));
+            }
+
+            let text = text.unwrap();
+            let page_count = text.parse::<u32>().map_err(|e| {
+                anyhow!("parse page count error: {e:?}")
+            })?;
+            Ok(page_count)
+        }
+
+        async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
+            // 地理 360 搜索结果页面从 0 开始
+            let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", &keyword, page - 1);
+            let html = get_url_content(&self.inner.client, &url, None, None).await?;
+            let document = Html::parse_document(&html);
+            let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
+                anyhow!("parse selector error: {err:?}")
+            })?;
+
+            let albums = document.select(&selector).into_iter().map(|element| {
+                let href = element.value().attr("href");
+                let texts = element.text().collect::<Vec<_>>();
+                (href, texts)
+            }).filter_map(|(href, texts)| {
+                if href.is_none() || texts.is_empty() {
+                    None
+                } else {
+                    let url = href.unwrap().to_string();
+                    let name = texts.join("");
+                    Some(Album {
+                        name,
+                        url
+                    })
+                }
+            }).collect();
+
+            let page_count = if self.inner.page_count == 0 {
+                self.parse_page_count(&document)?
+            } else {
+                self.inner.page_count
+            };
+
+            Ok((albums, page_count))
+        }
+
+        fn get_pagination(&self, html: &str) -> usize {
+            1
+        }
+
+        async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
+            self.inner.get_page_pictures(url, ".imgbox>.img>img", None, None).await
+        }
+
+        async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
+            let pictures = self.get_page_pictures(url).await?;
+            Ok(pictures)
+        }
+
+        fn get_picture_name(&self,  url: &str) -> Result<String> {
+            let path = Path::new(url);
+            if let Some(file_name) = path.file_name() {
+                file_name.to_str().map(|s| {
+                    let mut names = s.split("@");
+                    let name = names.next();
+                    name.unwrap().to_string()
+                }).ok_or(anyhow!("get file name error: {url}"))
+            } else {
+                Err(anyhow!("get file name error: {url}"))
+            }
+        }
+
+    }
+
+    #[derive(Clone)]
+    struct SFTKParser {
+        inner: InnerParser
+    }
+
+    impl SFTKParser {
+
+        const PARSER_CODE: &'static str = "SFTK";
+
+        const PARSER_NAME: &'static str = "私房图库";
+
+        const BASE_URL: &'static str = "http://www.sftuku.com";
+
+        fn new() -> Self {
+            Self {
+                inner: InnerParser::new()
+            }
+        }
+
+        fn keyword_to_pinyin(keyword: &str) -> String {
+            let pinyin: String = keyword.chars()
+                .map(|c| c.to_pinyin().map(|p| p.plain().to_string()).unwrap_or(c.to_string()))
+                .collect::<Vec<String>>()
+                .join("");
+            pinyin
+        }
+
+        fn default_headers() -> HeaderMap {
+            let mut default_headers = HeaderMap::new();
+            default_headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN,zh-Hans;q=0.9"));
+            default_headers.insert(header::HOST, HeaderValue::from_static("www.sftuku.com"));
+            default_headers
+        }
+    }
+
+    #[async_trait]
+    impl Parser for SFTKParser {
+
+        fn parser_name(&self) -> String {
+            SFTKParser::PARSER_NAME.to_string()
+        }
+
+        fn client(&self) -> Arc<&Client> {
+            Arc::new(&self.inner.client)
+        }
+
+        fn parse_page_count(&self, document: &Html) -> Result<u32> {
+            let selector = Selector::parse(".pagelist>p>select>option").map_err(|err| {
+                anyhow!("parse selector error: {err:?}")
+            })?;
+
+            let elements: Vec<ElementRef> = document.select(&selector).into_iter().collect();
+            Ok((elements.len() / 2) as u32)
+        }
+
+        async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
+            let pinyin = Self::keyword_to_pinyin(&keyword);
+            let url = format!("http://www.sftuku.com/chis/{}/{}.html", &pinyin, page);
+            let html = get_url_content(&self.inner.client, &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
+            let document = Html::parse_document(&html);
+            let selector = Selector::parse("#list>ul>li>.Title>a").map_err(|err| {
+                anyhow!("parse selector error: {err:?}")
+            })?;
+
+            let albums = document.select(&selector).into_iter().map(|element| {
+                let href = element.value().attr("href");
+                let texts = element.text().collect::<Vec<_>>();
+                (href, texts)
+            }).filter_map(|(href, texts)| {
+                if href.is_none() || texts.is_empty() {
+                    None
+                } else {
+                    let url = format!("{}{}", Self::BASE_URL, href.unwrap());
+                    let name = texts.join("");
+                    Some(Album {
+                        name,
+                        url
+                    })
+                }
+            }).collect();
+
+            let page_count = if self.inner.page_count == 0 {
+                self.parse_page_count(&document)?
+            } else {
+                self.inner.page_count
+            };
+
+            Ok((albums, page_count))
+        }
+
+        fn get_pagination(&self, html: &str) -> usize {
+            let ret = Selector::parse(".pagelist>a");
+            if ret.is_err() {
+                error!("parse selector error: {:?}", ret.err());
+                return 0;
+            }
+
+            let selector = ret.unwrap();
+            let document = Html::parse_document(&html);
+            let elements: Vec<ElementRef> = document.select(&selector).into_iter().collect();
+            elements.len()
+        }
+
+        async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
+            self.inner.get_page_pictures(url, "#picg>.slide>a>img", Some("GBK".to_string()), Some(Self::default_headers())).await
+        }
+
+        async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
+            let html = get_url_content(&self.inner.client, &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
+            let page_count = self.get_pagination(&html);
+            let mut all_pictures = vec![];
+            for i in 1..=page_count {
+                let page_url = match i {
+                    1 => url.to_string(),
+                    n => {
+                        let base_url = &url[0..url.len() - 5];
+                        format!("{}_{}.html", base_url, n)
+                    }
+                };
+                let mut pictures = self.get_page_pictures(page_url).await?;
+                all_pictures.append(&mut pictures);
+            }
+
+            Ok(all_pictures)
+        }
+
+        fn get_picture_name(&self, url: &str) -> Result<String> {
+            let path = Path::new(url);
+            if let Some(file_name) = path.file_name() {
+                file_name.to_str().map(|s| {
+                    s.to_string()
+                }).ok_or(anyhow!("get file name error: {url}"))
+            } else {
+                Err(anyhow!("get file name error: {url}"))
+            }
+        }
+    }
 
     pub fn parse(parser_code: &str) -> Result<Arc<dyn Parser>> {
         match parser_code.to_uppercase().as_str() {
@@ -174,309 +487,6 @@ pub mod parser {
         parsers
     }
 
-}
-
-#[derive(Clone)]
-struct InnerParser {
-    client: Client,
-    page: u32,
-    page_count: u32
-}
-
-impl InnerParser {
-    fn new() -> Self {
-        Self {
-            client: Client::new(),
-            page: 0,
-            page_count: 0
-        }
-    }
-
-    async fn get_page_pictures(&self, url: String, selector: &str, encoding: Option<String>, headers: Option<HeaderMap>) -> Result<Vec<String>> {
-        let html = get_url_content(self.client.clone(), &url, encoding, headers).await?;
-        let document = Html::parse_document(&html);
-        let selector = Selector::parse(selector).map_err(|err| {
-            anyhow!("parse page pictures selector error: {err:?}")
-        })?;
-
-        let pictures: Vec<String> = document.select(&selector).into_iter().filter_map(|element| {
-            if let Some(url) = element.value().attr("src") {
-                Some(url.to_string())
-            } else {
-                None
-            }
-        }).collect();
-        Ok(pictures)
-    }
-}
-
-#[async_trait]
-pub trait Parser: Send + Sync {
-
-    fn parser_name(&self) -> String;
-
-    fn client(&self) -> Arc<&Client>;
-
-    fn parse_page_count(&self, document: &Html) -> Result<u32>;
-
-    async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)>;
-
-    fn get_pagination(&self, html: &str) -> usize;
-
-    async fn get_page_pictures(&self, url: String) -> Result<Vec<String>>;
-
-    async fn get_all_pictures(&self, url: String) -> Result<Vec<String>>;
-
-    fn get_picture_name(&self, url: &str) -> Result<String>;
-
-}
-
-#[derive(Clone)]
-struct DiLi360Parser {
-    inner: InnerParser
-}
-
-impl DiLi360Parser {
-
-    const PARSER_CODE: &'static str = "DILI360";
-
-    const PARSER_NAME: &'static str = "中国地理";
-
-    fn new() -> Self {
-        Self {
-            inner: InnerParser::new()
-        }
-    }
-}
-
-#[async_trait]
-impl Parser for DiLi360Parser {
-
-    fn parser_name(&self) -> String {
-        DiLi360Parser::PARSER_NAME.to_string()
-    }
-
-    fn client(&self) -> Arc<&Client> {
-        Arc::new(&self.inner.client)
-    }
-
-    fn parse_page_count(&self, document: &Html) -> Result<u32> {
-        let selector = Selector::parse("#pageFooter .pager-normal-foot").map_err(|err| {
-            anyhow!("parse selector error: {err:?}")
-        })?;
-
-        let last_element = document.select(&selector).last();
-        if last_element.is_none() {
-            return Err(anyhow!("parse page count error: not found page element"));
-        }
-
-        let element = last_element.unwrap();
-        let text = element.text().next();
-        if text.is_none() {
-            return Err(anyhow!("parse page count error: not found page text"));
-        }
-
-        let text = text.unwrap();
-        let page_count = text.parse::<u32>().map_err(|e| {
-            anyhow!("parse page count error: {e:?}")
-        })?;
-        Ok(page_count)
-    }
-
-    async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
-        // 地理 360 搜索结果页面从 0 开始
-        let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", &keyword, page - 1);
-        let html = get_url_content(self.inner.client.clone(), &url, None, None).await?;
-        let document = Html::parse_document(&html);
-        let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
-            anyhow!("parse selector error: {err:?}")
-        })?;
-
-        let albums = document.select(&selector).into_iter().map(|element| {
-            let href = element.value().attr("href");
-            let texts = element.text().collect::<Vec<_>>();
-            (href, texts)
-        }).filter_map(|(href, texts)| {
-            if href.is_none() || texts.is_empty() {
-                None
-            } else {
-                let url = href.unwrap().to_string();
-                let name = texts.join("");
-                Some(Album {
-                    name,
-                    url
-                })
-            }
-        }).collect();
-
-        let page_count = if self.inner.page_count == 0 {
-            self.parse_page_count(&document)?
-        } else {
-            self.inner.page_count
-        };
-
-        Ok((albums, page_count))
-    }
-
-    fn get_pagination(&self, html: &str) -> usize {
-        1
-    }
-
-    async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
-        self.inner.get_page_pictures(url, ".imgbox>.img>img", None, None).await
-    }
-
-    async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
-        let pictures = self.get_page_pictures(url).await?;
-        Ok(pictures)
-    }
-
-    fn get_picture_name(&self,  url: &str) -> Result<String> {
-        let path = Path::new(url);
-        if let Some(file_name) = path.file_name() {
-            file_name.to_str().map(|s| {
-                let mut names = s.split("@");
-                let name = names.next();
-                name.unwrap().to_string()
-            }).ok_or(anyhow!("get file name error: {url}"))
-        } else {
-            Err(anyhow!("get file name error: {url}"))
-        }
-    }
-
-}
-
-#[derive(Clone)]
-struct SFTKParser {
-    inner: InnerParser
-}
-
-impl SFTKParser {
-
-    const PARSER_CODE: &'static str = "SFTK";
-
-    const PARSER_NAME: &'static str = "私房图库";
-
-    const BASE_URL: &'static str = "http://www.sftuku.com";
-
-    fn new() -> Self {
-        Self {
-            inner: InnerParser::new()
-        }
-    }
-
-    fn keyword_to_pinyin(keyword: &str) -> String {
-        let pinyin: String = keyword.chars()
-            .map(|c| c.to_pinyin().map(|p| p.plain().to_string()).unwrap_or(c.to_string()))
-            .collect::<Vec<String>>()
-            .join("");
-        pinyin
-    }
-
-    fn default_headers() -> HeaderMap {
-        let mut default_headers = HeaderMap::new();
-        default_headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN,zh-Hans;q=0.9"));
-        default_headers.insert(header::HOST, HeaderValue::from_static("www.sftuku.com"));
-        default_headers
-    }
-}
-
-#[async_trait]
-impl Parser for SFTKParser {
-
-    fn parser_name(&self) -> String {
-        SFTKParser::PARSER_NAME.to_string()
-    }
-
-    fn client(&self) -> Arc<&Client> {
-        Arc::new(&self.inner.client)
-    }
-
-    fn parse_page_count(&self, document: &Html) -> Result<u32> {
-        let selector = Selector::parse(".pagelist>p>select>option").map_err(|err| {
-            anyhow!("parse selector error: {err:?}")
-        })?;
-
-        let elements: Vec<ElementRef> = document.select(&selector).into_iter().collect();
-        Ok((elements.len() / 2) as u32)
-    }
-
-    async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
-        let pinyin = Self::keyword_to_pinyin(&keyword);
-        let url = format!("http://www.sftuku.com/chis/{}/{}.html", &pinyin, page);
-        let html = get_url_content(self.inner.client.clone(), &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
-        let document = Html::parse_document(&html);
-        let selector = Selector::parse("#list>ul>li>.Title>a").map_err(|err| {
-            anyhow!("parse selector error: {err:?}")
-        })?;
-
-        let albums = document.select(&selector).into_iter().map(|element| {
-            let href = element.value().attr("href");
-            let texts = element.text().collect::<Vec<_>>();
-            (href, texts)
-        }).filter_map(|(href, texts)| {
-            if href.is_none() || texts.is_empty() {
-                None
-            } else {
-                let url = format!("{}{}", Self::BASE_URL, href.unwrap());
-                let name = texts.join("");
-                Some(Album {
-                    name,
-                    url
-                })
-            }
-        }).collect();
-
-        let page_count = if self.inner.page_count == 0 {
-            self.parse_page_count(&document)?
-        } else {
-            self.inner.page_count
-        };
-
-        Ok((albums, page_count))
-    }
-
-    fn get_pagination(&self, html: &str) -> usize {
-        let ret = Selector::parse(".pagelist>a");
-        if ret.is_err() {
-            error!("parse selector error: {:?}", ret.err());
-            return 0;
-        }
-
-        let selector = ret.unwrap();
-        let document = Html::parse_document(&html);
-        let elements: Vec<ElementRef> = document.select(&selector).into_iter().collect();
-        elements.len()
-    }
-
-    async fn get_page_pictures(&self, url: String) -> Result<Vec<String>> {
-        self.inner.get_page_pictures(url, "#picg>.slide>a>img", Some("GBK".to_string()), Some(Self::default_headers())).await
-    }
-
-    async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
-        let html = get_url_content(self.inner.client.clone(), &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
-        let page_count = self.get_pagination(&html);
-        let mut all_pictures = vec![];
-        let base_url = &url[0..url.len() - 5];
-        for i in 1..=page_count {
-            let page_url = format!("{}_{}.html", base_url, i);
-            let mut pictures = self.get_page_pictures(page_url).await?;
-            all_pictures.append(&mut pictures);
-        }
-
-        Ok(all_pictures)
-    }
-
-    fn get_picture_name(&self, url: &str) -> Result<String> {
-        let path = Path::new(url);
-        if let Some(file_name) = path.file_name() {
-            file_name.to_str().map(|s| {
-                s.to_string()
-            }).ok_or(anyhow!("get file name error: {url}"))
-        } else {
-            Err(anyhow!("get file name error: {url}"))
-        }
-    }
 }
 
 pub struct AlbumSearcher {
@@ -693,17 +703,6 @@ mod tests {
                 }
             }
         });
-    }
-
-    #[test]
-    fn test_keyword_to_pinyin() {
-        let keyword = "左公子";
-        let pinyin = SFTKParser::keyword_to_pinyin(keyword);
-        assert_eq!(pinyin, "zuogongzi".to_string());
-
-        let keyword = "左公子11";
-        let pinyin = SFTKParser::keyword_to_pinyin(keyword);
-        assert_eq!(pinyin, "zuogongzi11".to_string());
     }
 
 }
