@@ -69,7 +69,8 @@ async fn get_url_content(client: &Client, url: &str, encoding: Option<String>, h
 #[derive(Clone)]
 pub struct Album {
     pub name: String,
-    url: String
+    pub cover: Option<String>,
+    pub url: String
 }
 
 impl Album {
@@ -188,6 +189,17 @@ pub mod parser {
             }).collect();
             Ok(pictures)
         }
+
+        fn get_picture_name(&self,  url: &str) -> Result<String> {
+            let path = Path::new(url);
+            if let Some(file_name) = path.file_name() {
+                file_name.to_str().map(|s| {
+                    s.to_string()
+                }).ok_or(anyhow!("get file name error: {url}"))
+            } else {
+                Err(anyhow!("get file name error: {url}"))
+            }
+        }
     }
 
     #[async_trait]
@@ -268,24 +280,27 @@ pub mod parser {
             let url = format!("https://zhannei.baidu.com/cse/site?q={}&p={}&nsid=&cc=www.dili360.com", &keyword, page - 1);
             let html = get_url_content(&self.inner.client, &url, None, None).await?;
             let document = Html::parse_document(&html);
-            let selector = Selector::parse("#results>div>h3>a").map_err(|err| {
+            let selector = Selector::parse("#results>.result").map_err(|err| {
                 anyhow!("parse selector error: {err:?}")
             })?;
 
             let albums = document.select(&selector).into_iter().map(|element| {
-                let href = element.value().attr("href");
-                let texts = element.text().collect::<Vec<_>>();
-                (href, texts)
-            }).filter_map(|(href, texts)| {
-                if href.is_none() || texts.is_empty() {
-                    None
-                } else {
-                    let url = href.unwrap().to_string();
-                    let name = texts.join("");
-                    Some(Album {
-                        name,
-                        url
-                    })
+                let title_selector = Selector::parse("h3>a").unwrap();
+                let title_element = element.select(&title_selector).next();
+                let (name, url) = title_element.and_then(|e| {
+                    Some((e.text().collect::<Vec<_>>().join(""), e.value().attr("href").unwrap_or("").to_string()))
+                }).unwrap_or(("".to_string(), "".to_string()));
+
+                let cover_selector = Selector::parse("div>.c-image img").unwrap();
+                let cover_element = element.select(&cover_selector).next();
+                let cover = cover_element.and_then(|e| {
+                    e.value().attr("src").map(|url| url.to_string())
+                });
+
+                Album {
+                    name,
+                    cover,
+                    url
                 }
             }).collect();
 
@@ -308,20 +323,14 @@ pub mod parser {
 
         async fn get_all_pictures(&self, url: String) -> Result<Vec<String>> {
             let pictures = self.get_page_pictures(url).await?;
+            let pictures = pictures.into_iter().map(|picture| {
+                picture.split("@").next().unwrap_or("").to_string()
+            }).collect();
             Ok(pictures)
         }
 
         fn get_picture_name(&self,  url: &str) -> Result<String> {
-            let path = Path::new(url);
-            if let Some(file_name) = path.file_name() {
-                file_name.to_str().map(|s| {
-                    let mut names = s.split("@");
-                    let name = names.next();
-                    name.unwrap().to_string()
-                }).ok_or(anyhow!("get file name error: {url}"))
-            } else {
-                Err(anyhow!("get file name error: {url}"))
-            }
+            self.inner.get_picture_name(url)
         }
 
     }
@@ -402,6 +411,7 @@ pub mod parser {
                     let name = texts.join("");
                     Some(Album {
                         name,
+                        cover: None,
                         url
                     })
                 }
@@ -453,14 +463,7 @@ pub mod parser {
         }
 
         fn get_picture_name(&self, url: &str) -> Result<String> {
-            let path = Path::new(url);
-            if let Some(file_name) = path.file_name() {
-                file_name.to_str().map(|s| {
-                    s.to_string()
-                }).ok_or(anyhow!("get file name error: {url}"))
-            } else {
-                Err(anyhow!("get file name error: {url}"))
-            }
+            self.inner.get_picture_name(url)
         }
     }
 

@@ -6,15 +6,19 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.95"
 async-trait = "0.1.85"
+axum = "0.8.1"
 encoding = "0.2.33"
 indicatif = "0.17.9"
 lazy_static = "1.5.0"
 lru = "0.13.0"
 pinyin = "0.10.0"
 regex = "1.11.1"
-reqwest = { version = "0.12.12", features = ["gzip", "deflate"] }
+reqwest = { version = "0.12.12", features = ["gzip", "deflate", "stream"] }
 scraper = "0.22.0"
 tokio = { version = "1.42.0", features = ["fs", "test-util", "rt-multi-thread", "rt", "macros"] }
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = "0.3.19"
+serde = { version = "1.0.217", features = ["derive"] }
+tower-http = { version = "0.6.2", features = ["auth"] }
+serde_json = "1.0.138"

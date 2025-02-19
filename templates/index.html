@@ -1,0 +1,211 @@
+<html>
+<head>
+    <title>图片浏览</title>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+
+    <link rel="stylesheet" href="https://fastly.jsdelivr.net/npm/vant@4/lib/index.css"/>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://fastly.jsdelivr.net/npm/vant@4/lib/vant.min.js"></script>
+
+</head>
+<body>
+    <div id="app">
+        <van-row>
+            <van-col span="24">
+                <van-field
+                        v-model="parser.text"
+                        is-link
+                        readonly
+                        label="解析器"
+                        placeholder="选择解析器"
+                        @click="showPicker = true"
+                />
+            </van-col>
+        </van-row>
+
+        <van-row>
+            <van-col span="24">
+                <van-search
+                        v-model="searcher.keyword"
+                        show-action
+                        label="关键词"
+                        placeholder="请输入搜索关键词"
+                        @search="onSearch"
+                >
+                    <template #action>
+                        <div @click="onSearch">搜索</div>
+                    </template>
+                </van-search>
+            </van-col>
+        </van-row>
+
+        <van-row>
+            <van-col span="24">
+                <van-list
+                        v-model:loading="loading"
+                        :finished="finished"
+                        finished-text="没有更多了"
+                        @load="onLoad"
+                >
+                    <van-card
+                            v-for="(album, i) in albums"
+                            :key="'album-' + i"
+                            :title="album.name"
+                            :thumb="album.cover"
+                            @click="onShowAlbumPictures(album)"
+                    />
+                </van-list>
+            </van-col>
+        </van-row>
+
+        <van-popup v-model:show="showPicker" destroy-on-close round position="bottom">
+            <van-picker
+                    :model-value="parser.value"
+                    :columns="parsers"
+                    @cancel="showPicker = false"
+                    @confirm="onConfirmParser"
+            />
+        </van-popup>
+    </div>
+    <script>
+        const { createApp, ref, reactive, onMounted  } = Vue;
+        const app = createApp({
+            setup() {
+                let parser = reactive({
+                    text: '',
+                    value: ''
+                });
+                let parsers = ref([]);
+                let showPicker = ref(false);
+                const albums = ref([]);
+                const loading = ref(false);
+                const finished = ref(true);
+                let searcher = reactive({
+                    parser_code: '',
+                    keyword: '',
+                    page: 1,
+                    size: 10
+                });
+
+                const onSearch = () => {
+                    loading.value = true;
+                    finished.value = false;
+
+                    searcher.page = 1;
+                    searcher.size = 10;
+
+                    axios.get('/album/search', {
+                        params: {
+                            parser_code: parser.value[0],
+                            keyword: searcher.keyword,
+                            page: searcher.page,
+                            size: searcher.size
+                        },
+                    }).then(function (response) {
+                        let data = response.data.data;
+                        albums.value = data;
+                        loading.value = false;
+
+                        if (albums.value.length === 0) {
+                            finished.value = true;
+                        }
+                    }).catch(function (error) {
+                        console.log(error);
+                    });
+                }
+
+                const onConfirmParser = ({ selectedValues, selectedOptions }) => {
+                    showPicker.value = false;
+                    parser.value = selectedValues;
+                    parser.text = selectedOptions[0].text;
+                    searcher.parser_code = parser.value[0];
+                }
+
+                const onLoad = () => {
+                    searcher.page ++;
+                    loading.value = true;
+                    axios.get('/album/search', {
+                        params: {
+                            parser_code: parser.value[0],
+                            keyword: searcher.keyword,
+                            page: searcher.page,
+                            size: searcher.size
+                        },
+                    }).then(function (response) {
+                        let data = response.data.data;
+                        albums.value = albums.value.concat(data);
+                        loading.value = false;
+
+                        if (albums.value.length === 0) {
+                            finished.value = true;
+                        }
+                    }).catch(function (error) {
+                        console.log(error);
+                    });
+                }
+
+                const onShowAlbumPictures = (album) => {
+                    axios.get('/album/pictures', {
+                        params: {
+                            parser_code: parser.value[0],
+                            url: album.url
+                        },
+                    }).then(response => {
+                        let pictures = response.data.data;
+                        if (pictures.length) {
+                            pictures = pictures.map(picture => {
+                                return picture.split('@')[0];
+                            });
+                            vant.showImagePreview(pictures);
+                        } else {
+                            vant.showDialog({
+                                message: '该专辑内暂无图片',
+                            }).then(() => {
+                            });
+                        }
+                    }).catch(function (error) {
+                        console.log(error);
+                    });
+                }
+
+                onMounted(() => {
+                    axios.get('/album/parsers').then(function (response) {
+                        let data = response.data.data
+                        parsers.value = data.map(e => {
+                            return {
+                                text: e.name,
+                                value: e.code
+                            }
+                        })
+                        parser.value = [parsers.value[0].value];
+                        parser.text = parsers.value[0].text;
+                    }).catch(function (error) {
+                        console.log(error);
+                    });
+                })
+
+                return {
+                    parser,
+                    parsers,
+                    searcher,
+                    albums,
+                    loading,
+                    finished,
+                    onSearch,
+                    onLoad,
+                    onConfirmParser,
+                    onShowAlbumPictures,
+                    showPicker
+                }
+            }
+        });
+
+        app.use(vant);
+        app.mount('#app');
+    </script>
+</body>
+</html>
