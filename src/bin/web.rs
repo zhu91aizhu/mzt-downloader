@@ -1,16 +1,35 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use axum::{Json, Router, routing::get};
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
+use dashmap::DashMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use tracing::error;
+use tracing_subscriber::fmt::format;
+
 use lmpic_downloader::{AlbumSearcher, parser};
+
+#[derive(Clone)]
+struct WebState {
+    client: Client,
+    parser_cache: Arc<DashMap<String, Arc<dyn parser::Parser>>>,
+    searcher_cache: Arc<DashMap<String, AlbumSearcher>>
+}
 
 #[tokio::main]
 async fn main() {
-    let client = Client::new();
+    let state = WebState {
+        client: Client::new(),
+        parser_cache: Arc::new(DashMap::new()),
+        searcher_cache: Arc::new(DashMap::new())
+    };
 
     let app = Router::new()
         .route("/album", get(album))
@@ -18,8 +37,7 @@ async fn main() {
         .route("/album/search", get(search_albums))
         .route("/album/picture", get(forward_picture))
         .route("/album/pictures", get(get_album_by_url))
-        .with_state(client);
-        // .layer(AsyncRequireAuthorizationLayer::new(Basic::from("mengaily:199149")));
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -94,15 +112,25 @@ struct Album {
     url: String
 }
 
-async fn search_albums(Query(query): Query<SearchQuery>) -> Json<CommonResponse<Vec<Album>>> {
-    let parser = parser::parse(&query.parser_code);
-    if parser.is_err() {
-        let error = format!("unknown parser: {}", query.parser_code);
-        return Json(CommonResponse::failure(-1, error, vec![]));
-    }
+async fn search_albums(Query(query): Query<SearchQuery>, State(state): State<WebState>) -> Json<CommonResponse<Vec<Album>>> {
+    let parser = match parser::parse(&query.parser_code) {
+        Ok(p) => p,
+        Err(err) => {
+            let error = format!("unknown parser: {}", query.parser_code);
+            return Json(CommonResponse::failure(-1, error, vec![]));
+        }
+    };
 
-    let parser = parser.unwrap();
-    let mut searcher = AlbumSearcher::new(parser.clone(), &query.keyword, AlbumSearcher::DEFAULT_PAGE_SIZE);
+    let searcher_key = format!("{}-{}", query.parser_code, query.keyword);
+    let mut searcher = match state.searcher_cache.get_mut(&searcher_key) {
+        Some(searcher) => searcher,
+        None => {
+            let searcher = AlbumSearcher::new(parser, &query.keyword, AlbumSearcher::DEFAULT_PAGE_SIZE);
+            state.searcher_cache.insert(searcher_key.clone(), searcher);
+            state.searcher_cache.get_mut(&searcher_key).unwrap()
+        }
+    };
+
     let result = searcher.jump(&query.page).await;
     let response = match result {
         Ok(albums) => {
@@ -129,14 +157,23 @@ pub struct AlbumQuery {
     pub url: String
 }
 
-async fn get_album_by_url(Query(query): Query<AlbumQuery>) -> Json<CommonResponse<Vec<String>>> {
-    let parser = parser::parse(&query.parser_code);
-    if parser.is_err() {
-        let error = format!("unknown parser: {}", query.parser_code);
-        return Json(CommonResponse::failure(-1, error, vec![]));
-    }
+async fn get_album_by_url(Query(query): Query<AlbumQuery>, State(state): State<WebState>) -> Json<CommonResponse<Vec<String>>> {
+    let parser = match state.parser_cache.get(&query.parser_code) {
+        Some(p) => p,
+        None => {
+            match parser::parse(&query.parser_code) {
+                Ok(p) => {
+                    state.parser_cache.insert(query.parser_code.clone(), p);
+                    state.parser_cache.get(&query.parser_code).unwrap()
+                }
+                Err(err) => {
+                    let error = format!("unknown parser: {}", query.parser_code);
+                    return Json(CommonResponse::failure(-1, error, vec![]));
+                }
+            }
+        }
+    };
 
-    let parser = parser.unwrap();
     let response =  match parser.get_all_pictures(query.url.clone()).await {
         Ok(pictures) => {
             let pictures = pictures.into_iter().map(|picture| {
@@ -157,8 +194,8 @@ pub struct ForwardQuery {
     pub url: String
 }
 
-async fn forward_picture(Query(query): Query<ForwardQuery>, State(client): State<Client>) -> Response {
-    let response = match client.get(query.url).send().await {
+async fn forward_picture(Query(query): Query<ForwardQuery>, State(state): State<WebState>) -> Response {
+    let response = match state.client.get(query.url).send().await {
         Ok(resp) => resp,
         Err(err) => {
             error!("get picture error: {:?}", err);
