@@ -1,25 +1,26 @@
 use axum::{Json, Router, routing::get};
 use axum::body::Body;
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-
+use tracing::error;
 use lmpic_downloader::{AlbumSearcher, parser};
 
 #[tokio::main]
 async fn main() {
-    // 创建路由器并指定路由和服务
+    let client = Client::new();
+
     let app = Router::new()
         .route("/album", get(album))
         .route("/album/parsers", get(get_parsers))
         .route("/album/search", get(search_albums))
         .route("/album/picture", get(forward_picture))
-        .route("/album/pictures", get(get_album_by_url));
+        .route("/album/pictures", get(get_album_by_url))
+        .with_state(client);
         // .layer(AsyncRequireAuthorizationLayer::new(Basic::from("mengaily:199149")));
 
-    // 启动HTTP服务器
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -156,11 +157,11 @@ pub struct ForwardQuery {
     pub url: String
 }
 
-async fn forward_picture(Query(query): Query<ForwardQuery>) -> Response {
-    let client = Client::new();
+async fn forward_picture(Query(query): Query<ForwardQuery>, State(client): State<Client>) -> Response {
     let response = match client.get(query.url).send().await {
         Ok(resp) => resp,
         Err(err) => {
+            error!("get picture error: {:?}", err);
             return (StatusCode::BAD_REQUEST, Body::empty()).into_response();
         }
     };
