@@ -200,6 +200,35 @@ pub mod parser {
                 Err(anyhow!("get file name error: {url}"))
             }
         }
+
+        fn default_get_name_and_url(&self, root_element: ElementRef, path: &str) -> (String, String) {
+            let selector = Selector::parse(path).unwrap();
+            let element = root_element.select(&selector).next();
+            element.and_then(|e| {
+                Some((e.text().collect::<Vec<_>>().join(""), e.value().attr("href").unwrap_or("").to_string()))
+            }).unwrap_or(("".to_string(), "".to_string()))
+        }
+
+        fn default_get_cover(&self, root_element: ElementRef, path: &str) -> Option<String> {
+            let selector = Selector::parse(path).unwrap();
+            let element = root_element.select(&selector).next();
+            element.and_then(|e| {
+                e.value().attr("src").map(|url| url.to_string())
+            })
+        }
+
+        fn default_get_albums(&self, document: &Html, selector: Selector, name_path: &str, cover_path: &str) -> Vec<Album> {
+            document.select(&selector).into_iter().map(|element| {
+                let (name, url) = self.default_get_name_and_url(element, name_path);
+                let cover = self.default_get_cover(element, cover_path);
+
+                Album {
+                    name,
+                    cover,
+                    url
+                }
+            }).collect()
+        }
     }
 
     #[async_trait]
@@ -283,27 +312,7 @@ pub mod parser {
             let selector = Selector::parse("#results>.result").map_err(|err| {
                 anyhow!("parse selector error: {err:?}")
             })?;
-
-            let albums = document.select(&selector).into_iter().map(|element| {
-                let title_selector = Selector::parse("h3>a").unwrap();
-                let title_element = element.select(&title_selector).next();
-                let (name, url) = title_element.and_then(|e| {
-                    Some((e.text().collect::<Vec<_>>().join(""), e.value().attr("href").unwrap_or("").to_string()))
-                }).unwrap_or(("".to_string(), "".to_string()));
-
-                let cover_selector = Selector::parse("div>.c-image img").unwrap();
-                let cover_element = element.select(&cover_selector).next();
-                let cover = cover_element.and_then(|e| {
-                    e.value().attr("src").map(|url| url.to_string())
-                });
-
-                Album {
-                    name,
-                    cover,
-                    url
-                }
-            }).collect();
-
+            let albums = self.inner.default_get_albums(&document, selector, "h3>a", "div>.c-image img");
             let page_count = if self.inner.page_count == 0 {
                 self.parse_page_count(&document)?
             } else {
@@ -395,28 +404,10 @@ pub mod parser {
             let url = format!("http://www.sftuku.com/chis/{}/{}.html", &pinyin, page);
             let html = get_url_content(&self.inner.client, &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
             let document = Html::parse_document(&html);
-            let selector = Selector::parse("#list>ul>li>.Title>a").map_err(|err| {
+            let selector = Selector::parse("#list>ul>li").map_err(|err| {
                 anyhow!("parse selector error: {err:?}")
             })?;
-
-            let albums = document.select(&selector).into_iter().map(|element| {
-                let href = element.value().attr("href");
-                let texts = element.text().collect::<Vec<_>>();
-                (href, texts)
-            }).filter_map(|(href, texts)| {
-                if href.is_none() || texts.is_empty() {
-                    None
-                } else {
-                    let url = format!("{}{}", Self::BASE_URL, href.unwrap());
-                    let name = texts.join("");
-                    Some(Album {
-                        name,
-                        cover: None,
-                        url
-                    })
-                }
-            }).collect();
-
+            let albums = self.inner.default_get_albums(&document, selector, ".Title>a", "a>img");
             let page_count = if self.inner.page_count == 0 {
                 self.parse_page_count(&document)?
             } else {

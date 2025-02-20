@@ -1,7 +1,15 @@
 [package]
-name = "gqwht-download"
+name = "lmpic_downloader"
 version = "0.1.0"
 edition = "2021"
+
+[[bin]]
+name = "cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "web"
+path = "src/bin/web.rs"
 
 [dependencies]
 anyhow = "1.0.95"

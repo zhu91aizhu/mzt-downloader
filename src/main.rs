@@ -9,7 +9,7 @@ use tracing_subscriber::{Layer, registry};
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
 
-use gqwht_download::{Album, AlbumSearcher, parser};
+use lmpic_downloader::{Album, AlbumSearcher, parser};
 
 #[derive(Debug)]
 enum Command {

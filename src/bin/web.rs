@@ -6,7 +6,7 @@ use axum::response::{Html, IntoResponse, Response};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use gqwht_download::{AlbumSearcher, parser};
+use lmpic_downloader::{AlbumSearcher, parser};
 
 #[tokio::main]
 async fn main() {
