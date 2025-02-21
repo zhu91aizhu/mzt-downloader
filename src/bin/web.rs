@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::process;
 use std::sync::Arc;
 
 use axum::{Json, Router, routing::get};
@@ -10,9 +11,13 @@ use axum::response::{Html, IntoResponse, Response};
 use dashmap::DashMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio::fs::create_dir_all;
 use tokio::sync::Mutex;
-use tracing::error;
-use tracing_subscriber::fmt::format;
+use tracing::{error, info};
+use tracing_appender::non_blocking::NonBlocking;
+use tracing_subscriber::{Layer, registry};
+use tracing_subscriber::fmt::{format, layer};
+use tracing_subscriber::layer::SubscriberExt;
 
 use lmpic_downloader::{AlbumSearcher, parser};
 
@@ -25,6 +30,17 @@ struct WebState {
 
 #[tokio::main]
 async fn main() {
+    create_dir_all("./log").await.unwrap();
+
+    let file_appender = tracing_appender::rolling::never("./log", "downloader.log");
+    let (non_blocking_appender, _guard) = NonBlocking::new(file_appender);
+    let file_layer = layer()
+        .with_writer(non_blocking_appender)
+        .with_ansi(false)
+        .with_filter(tracing_subscriber::filter::LevelFilter::INFO);
+    let subscriber = registry().with(file_layer);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+
     let state = WebState {
         client: Client::new(),
         parser_cache: Arc::new(DashMap::new()),
@@ -40,6 +56,7 @@ async fn main() {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    info!("web server starting...");
     axum::serve(listener, app).await.unwrap();
 }
 

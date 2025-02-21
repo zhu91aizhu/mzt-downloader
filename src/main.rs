@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::process;
 use std::str::FromStr;
 
 use anyhow::anyhow;
@@ -192,7 +193,8 @@ impl PromptContext {
 
 #[tokio::main]
 async fn main() {
-    create_dir_all("./log").await.expect("create log dir error");
+    create_dir_all("./log").await.unwrap();
+
     let file_appender = tracing_appender::rolling::never("./log", "downloader.log");
     let (non_blocking_appender, _guard) = NonBlocking::new(file_appender);
     let file_layer = layer()
@@ -200,7 +202,7 @@ async fn main() {
         .with_ansi(false)
         .with_filter(tracing_subscriber::filter::LevelFilter::INFO);
     let subscriber = registry().with(file_layer);
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
+    tracing::subscriber::set_global_default(subscriber).unwrap();
 
     let mut searcher_opt = None;
     let mut searcher = &mut searcher_opt;
