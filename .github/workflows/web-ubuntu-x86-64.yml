@@ -1,4 +1,4 @@
-name: web-windows-x86-64
+name: web-ubuntu-x86-64
 
 on:
   push:
