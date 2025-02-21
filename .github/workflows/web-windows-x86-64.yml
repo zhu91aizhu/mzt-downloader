@@ -30,7 +30,7 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: web.exe
+        name: web
         path: target/release/web.exe
         retention-days: 30
 
