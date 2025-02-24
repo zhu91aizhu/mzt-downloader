@@ -1,0 +1,38 @@
+name: cli-windows-x86-64
+
+on:
+  label:
+    types:
+      - created
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        override: true
+    
+    - name: Build
+      run: cargo build --release --bin cli --verbose
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cli
+        path: target/release/cli.exe
+        retention-days: 30
+
+    - name: Clean
+      run: cargo clean
