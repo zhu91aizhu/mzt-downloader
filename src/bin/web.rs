@@ -1,6 +1,3 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::process;
 use std::sync::Arc;
 
 use axum::{Json, Router, routing::get};
@@ -12,11 +9,10 @@ use dashmap::DashMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::fs::create_dir_all;
-use tokio::sync::Mutex;
 use tracing::{error, info};
 use tracing_appender::non_blocking::NonBlocking;
 use tracing_subscriber::{Layer, registry};
-use tracing_subscriber::fmt::{format, layer};
+use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
 
 use lmpic_downloader::{AlbumSearcher, parser};
@@ -103,6 +99,53 @@ impl <T> CommonResponse<T> {
     }
 }
 
+#[derive(Serialize)]
+struct Pagination {
+    page: u32,
+    page_total: u32
+}
+
+impl Pagination {
+    fn new(page: u32, page_total: u32) -> Pagination {
+        Pagination {
+            page,
+            page_total
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct PaginationResponse<T> {
+    code: i16,
+    message: String,
+    data: Option<T>,
+    page: u32,
+    page_total: u32
+}
+
+impl <T> PaginationResponse<T> {
+    fn success(data: T, pagination: Pagination) -> PaginationResponse<T> {
+        PaginationResponse {
+            code: 0,
+            message: "success".into(),
+            data: Some(data),
+            page: pagination.page,
+            page_total: pagination.page_total
+        }
+    }
+
+    fn failure(code: i16, message: String, data: T, pagination: Pagination) -> PaginationResponse<T> {
+        PaginationResponse {
+            code,
+            message,
+            data: Some(data),
+            page: pagination.page,
+            page_total: pagination.page_total
+        }
+    }
+
+}
+
 async fn get_parsers() -> Json<CommonResponse<Vec<Parser>>> {
     let parsers = parser::parsers();
     let parsers = parsers.into_iter().map(|p| {
@@ -129,12 +172,12 @@ struct Album {
     url: String
 }
 
-async fn search_albums(Query(query): Query<SearchQuery>, State(state): State<WebState>) -> Json<CommonResponse<Vec<Album>>> {
+async fn search_albums(Query(query): Query<SearchQuery>, State(state): State<WebState>) -> Json<PaginationResponse<Vec<Album>>> {
     let parser = match parser::parse(&query.parser_code) {
         Ok(p) => p,
         Err(err) => {
             let error = format!("unknown parser: {}", query.parser_code);
-            return Json(CommonResponse::failure(-1, error, vec![]));
+            return Json(PaginationResponse::failure(-1, error, vec![], Pagination::new(query.page, 0)));
         }
     };
 
@@ -158,11 +201,11 @@ async fn search_albums(Query(query): Query<SearchQuery>, State(state): State<Web
                     url: album.url.clone()
                 }
             }).collect::<Vec<Album>>();
-            CommonResponse::success(albums)
+            PaginationResponse::success(albums, Pagination::new(query.page, searcher.page_count()))
         },
         Err(err) => {
             let error = format!("search error: {:?}", err);
-            CommonResponse::failure(-1, error, vec![])
+            PaginationResponse::failure(-1, error, vec![], Pagination::new(query.page, searcher.page_count()))
         }
     };
     Json(response)
@@ -184,6 +227,7 @@ async fn get_album_by_url(Query(query): Query<AlbumQuery>, State(state): State<W
                     state.parser_cache.get(&query.parser_code).unwrap()
                 }
                 Err(err) => {
+                    error!("parse from {} to parser error: {:?}", query.parser_code, err);
                     let error = format!("unknown parser: {}", query.parser_code);
                     return Json(CommonResponse::failure(-1, error, vec![]));
                 }
@@ -212,7 +256,9 @@ pub struct ForwardQuery {
 }
 
 async fn forward_picture(Query(query): Query<ForwardQuery>, State(state): State<WebState>) -> Response {
-    let response = match state.client.get(query.url).send().await {
+    let headers = lmpic_downloader::default_headers();
+    let request = state.client.get(query.url).headers(headers);
+    let response = match request.send().await {
         Ok(resp) => resp,
         Err(err) => {
             error!("get picture error: {:?}", err);
@@ -225,6 +271,7 @@ async fn forward_picture(Query(query): Query<ForwardQuery>, State(state): State<
         *response_builder.headers_mut().unwrap() = response.headers().clone();
         response_builder.body(Body::from_stream(response.bytes_stream())).unwrap()
     } else {
+        error!("forward picture request error: {:?}", response.status());
         (StatusCode::INTERNAL_SERVER_ERROR, Body::empty()).into_response()
     }
 }

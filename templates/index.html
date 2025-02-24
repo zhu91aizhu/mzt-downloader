@@ -47,6 +47,7 @@
             <van-col span="24">
                 <van-list
                         v-model:loading="loading"
+                        :immediate-check="false"
                         :finished="finished"
                         finished-text="没有更多了"
                         @load="onLoad"
@@ -97,6 +98,7 @@
 
                     searcher.page = 1;
                     searcher.size = 10;
+                    albums.value = [];
 
                     axios.get('/album/search', {
                         params: {
@@ -106,14 +108,18 @@
                             size: searcher.size
                         },
                     }).then(function (response) {
-                        let data = response.data.data;
-                        albums.value = data;
+                        albums.value = response.data.data;
                         loading.value = false;
 
                         if (albums.value.length === 0) {
                             finished.value = true;
                         }
+
+                        if (searcher.page == response.data.page_total) {
+                            finished.value = true;
+                        }
                     }).catch(function (error) {
+                        loading.value = false;
                         console.log(error);
                     });
                 }
@@ -143,7 +149,12 @@
                         if (albums.value.length === 0) {
                             finished.value = true;
                         }
+
+                        if (searcher.page == response.data.page_total) {
+                            finished.value = true;
+                        }
                     }).catch(function (error) {
+                        loading.value = false;
                         console.log(error);
                     });
                 }

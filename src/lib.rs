@@ -18,7 +18,7 @@ use tracing::{error, info};
 use crate::parser::Parser;
 use crate::util::filenamify;
 
-fn default_headers() -> HeaderMap {
+pub fn default_headers() -> HeaderMap {
     let mut default_headers = HeaderMap::new();
     default_headers.insert(header::USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"));
     default_headers.insert(header::ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"));
@@ -401,13 +401,20 @@ pub mod parser {
 
         async fn parse_albums(&self, keyword: String, page: u32, size: u32) -> Result<(Vec<Album>, u32)> {
             let pinyin = Self::keyword_to_pinyin(&keyword);
-            let url = format!("http://www.sftuku.com/chis/{}/{}.html", &pinyin, page);
+            let url = format!("{}/chis/{}/{}.html", Self::BASE_URL, &pinyin, page);
             let html = get_url_content(&self.inner.client, &url, Some("GBK".to_string()), Some(Self::default_headers())).await?;
             let document = Html::parse_document(&html);
             let selector = Selector::parse("#list>ul>li").map_err(|err| {
                 anyhow!("parse selector error: {err:?}")
             })?;
             let albums = self.inner.default_get_albums(&document, selector, ".Title>a", "a>img");
+            let albums = albums.into_iter().map(|album| {
+                Album {
+                    name: album.name,
+                    cover: album.cover,
+                    url: format!("{}{}", Self::BASE_URL, album.url)
+                }
+            }).collect();
             let page_count = if self.inner.page_count == 0 {
                 self.parse_page_count(&document)?
             } else {
@@ -589,7 +596,7 @@ impl AlbumSearcher {
 
     pub async fn jump(&mut self, page: &u32) -> AlbumResult {
         let page = *page;
-        self.page = if page < 1 {
+        self.page = if page <= 1 {
             1
         } else {
             if self.page_count == 0 {

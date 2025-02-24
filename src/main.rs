@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::process;
 use std::str::FromStr;
 
 use anyhow::anyhow;
@@ -124,6 +123,7 @@ fn print_commands() {
     println!("prev(p): goto prev page");
     println!("first(f): goto first page");
     println!("last(l): goto last page");
+    println!("jump(j): jump to page");
     println!("download [idx](d [idx]): download album");
     println!("search [keyword](s [keyword]): search albums with keyword");
 }
